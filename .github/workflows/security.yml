@@ -1,0 +1,39 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_IMAGE: aquasec/trivy:0.76.0
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -f docker/Dockerfile --target runtime --build-arg ENGINE=chrome -t kagemusha:chrome .
+      - name: Scan image
+        run: >-
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE"
+          image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed kagemusha:chrome
+      - name: Scan repository
+        run: >-
+          docker run --rm -v "$PWD:/src:ro" -w /src "$TRIVY_IMAGE"
+          fs --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,misconfig,secret .

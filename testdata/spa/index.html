@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><title>kagemusha test SPA</title></head>
+<body>
+<div id="app">loading...</div>
+<script>
+  fetch('/api/data').then(function (r) { return r.json(); }).then(function (d) {
+    document.getElementById('app').textContent = d.title;
+    window.prerenderReady = true;
+  });
+</script>
+</body>
+</html>

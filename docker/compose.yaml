@@ -1,0 +1,22 @@
+# Run locally: docker compose -f docker/compose.yaml up --build
+services:
+  kagemusha:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+      args:
+        ENGINE: chrome
+    ports:
+      - "3000:3000"
+    environment:
+      KAGEMUSHA_MAX_CONCURRENT: "4"
+      KAGEMUSHA_CACHE_CONTROL: "public, max-age=3600"
+      KAGEMUSHA_BLOCK_DOMAINS: "www.googletagmanager.com,www.google-analytics.com"
+    # Chromium uses /dev/shm heavily. --disable-dev-shm-usage is set, but leave headroom anyway
+    shm_size: 512m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3

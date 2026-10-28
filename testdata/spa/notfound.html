@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="prerender-status-code" content="404"><title>not found</title></head>
+<body>
+<div id="app">not found page</div>
+<script>
+  fetch('https://blocked.invalid/beacon').then(function () {
+    document.getElementById('app').textContent = 'beacon:allowed';
+  }).catch(function () {
+    document.getElementById('app').textContent = 'beacon:blocked';
+  }).then(function () { window.prerenderReady = true; });
+</script>
+</body>
+</html>
