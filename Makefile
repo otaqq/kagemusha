@@ -3,7 +3,7 @@ IMAGE ?= kagemusha
 ENGINE ?= chrome
 DOCKER_BUILD := DOCKER_BUILDKIT=0 docker build -f docker/Dockerfile
 
-.PHONY: test itest testbase build image up down run-image lint
+.PHONY: test itest testbase itest-lightpanda testbase-lightpanda build image up down run-image lint
 
 ## Unit tests with the local Go toolchain (no browser needed)
 test:
@@ -17,6 +17,14 @@ testbase:
 itest:
 	docker run --rm -v "$(PWD):/src" -w /src -e KAGEMUSHA_ENGINE_PATH=/usr/bin/chromium \
 	  $(IMAGE):testbase go test -tags integration -count=1 ./...
+
+## Image with Chromium and Lightpanda (Debian) for the engine comparison tests
+testbase-lightpanda:
+	$(DOCKER_BUILD) --target testbase-lightpanda -t $(IMAGE):testbase-lightpanda .
+
+## Run the render integration tests on both engines (source is mounted)
+itest-lightpanda:
+	docker run --rm -v "$(PWD):/src" -w /src $(IMAGE):testbase-lightpanda go test -tags integration -count=1 ./internal/render/chrome/
 
 ## Build the binary locally (run it in a container, which has Chromium)
 build:

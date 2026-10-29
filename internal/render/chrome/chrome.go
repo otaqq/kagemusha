@@ -1,4 +1,5 @@
-// Package chrome implements render.Engine by driving headless Chrome (Chromium) with chromedp (CDP).
+// Package chrome implements render.Engine by driving a CDP browser with chromedp:
+// headless Chrome (Chromium), or Lightpanda (see lightpanda.go).
 // It uses only navigation (Page), interception (Fetch), completion-signal evaluation (Runtime) and HTML capture (DOM),
 // plus Browser.getVersion for health checks.
 package chrome
@@ -27,7 +28,7 @@ import (
 // ErrNotLaunched is returned when Render or Healthy is called before Launch.
 var ErrNotLaunched = errors.New("chrome: engine not launched")
 
-// Engine is one resident Chromium process.
+// Engine is one resident browser process.
 type Engine struct {
 	path string
 	args []string
@@ -38,6 +39,9 @@ type Engine struct {
 	allocCancel   context.CancelFunc
 	browserCancel context.CancelFunc
 	userAgent     string // browser default user agent plus the kagemusha marker
+
+	lightpanda bool
+	lp         *lpProcess // set while a Lightpanda process runs
 }
 
 // uaMarker is appended to the browser user agent so edges can tell kagemusha's own requests from bots (loop prevention).
@@ -51,8 +55,11 @@ func New(path string, args []string, log *slog.Logger) *Engine {
 	return &Engine{path: path, args: args, log: log}
 }
 
-// Launch starts Chromium as a child process and connects over CDP. It honors the ctx deadline.
+// Launch starts the browser as a child process and connects over CDP. It honors the ctx deadline.
 func (e *Engine) Launch(ctx context.Context) error {
+	if e.lightpanda {
+		return e.launchLightpanda(ctx)
+	}
 	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
 	opts = append(opts, chromedp.ExecPath(e.path))
 	opts = append(opts, flagsFromArgs(e.args)...)
@@ -103,21 +110,37 @@ func flagsFromArgs(args []string) []chromedp.ExecAllocatorOption {
 }
 
 func (e *Engine) browser() (context.Context, error) {
-	ctx, _, err := e.browserAndUA()
-	return ctx, err
-}
-
-func (e *Engine) browserAndUA() (context.Context, string, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if e.browserCtx == nil {
-		return nil, "", ErrNotLaunched
+		return nil, ErrNotLaunched
 	}
-	return e.browserCtx, e.userAgent, nil
+	return e.browserCtx, nil
+}
+
+// openTab creates the disposable per-render tab in its own BrowserContext and returns the
+// user agent to apply when the request sets none ("" leaves the browser's own).
+// Chrome: a tab of the resident browser (cancelling its parent would take the whole browser down).
+// Lightpanda: a fresh CDP connection, since it allows one browser context per connection.
+func (e *Engine) openTab() (context.Context, context.CancelFunc, string, error) {
+	if e.lightpanda {
+		return e.openLightpandaTab()
+	}
+	e.mu.RLock()
+	bctx, ua := e.browserCtx, e.userAgent
+	e.mu.RUnlock()
+	if bctx == nil {
+		return nil, nil, "", ErrNotLaunched
+	}
+	tabCtx, cancel := chromedp.NewContext(bctx, chromedp.WithNewBrowserContext())
+	return tabCtx, cancel, ua, nil
 }
 
 // Healthy reports whether the browser answers CDP.
 func (e *Engine) Healthy(ctx context.Context) bool {
+	if e.lightpanda {
+		return e.lightpandaHealthy(ctx)
+	}
 	bctx, err := e.browser()
 	if err != nil {
 		return false
@@ -130,8 +153,11 @@ func (e *Engine) Healthy(ctx context.Context) bool {
 	return err == nil
 }
 
-// Close stops the Chromium process.
+// Close stops the browser process.
 func (e *Engine) Close(ctx context.Context) error {
+	if e.lightpanda {
+		return e.closeLightpanda(ctx)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.browserCancel != nil {
@@ -186,21 +212,19 @@ func (a *activity) idle(quiet time.Duration) bool {
 
 // Render renders the page in a disposable per-render BrowserContext and returns the HTML.
 func (e *Engine) Render(ctx context.Context, req render.Request) (render.Result, error) {
-	bctx, defaultUA, err := e.browserAndUA()
-	if err != nil {
-		return render.Result{}, err
-	}
 	start := time.Now()
 	timeout := req.PageTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
 
-	// The tab is a child of browserCtx (cancelling its parent would take the whole browser down),
-	// and cancelling the tab disposes its BrowserContext.
+	// Cancelling the tab disposes its BrowserContext.
 	// The absolute limit (deadlineCtx) is not the tab's parent: on timeout the tab stays alive
 	// and only await stops, so the partial result can still be captured. Caller ctx cancellation is wired to the tab's cancel via AfterFunc
-	tabCtx, tabCancel := chromedp.NewContext(bctx, chromedp.WithNewBrowserContext())
+	tabCtx, tabCancel, defaultUA, err := e.openTab()
+	if err != nil {
+		return render.Result{}, err
+	}
 	defer tabCancel()
 	stop := context.AfterFunc(ctx, tabCancel)
 	defer stop()

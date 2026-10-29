@@ -1,0 +1,5 @@
+.git
+/tmp/
+/bin/
+/out/
+coverage.out

@@ -45,13 +45,10 @@ func run() int {
 		path = spec.DefaultPath
 	}
 	factory := func() render.Engine {
-		switch cfg.Engine {
-		case config.EngineChrome:
-			return chrome.New(path, spec.Args, log)
-		default:
-			// Lightpanda speaks CDP, so try the same implementation (experimental; capability gaps are handled later)
-			return chrome.New(path, spec.Args, log)
+		if cfg.Engine == config.EngineLightpanda {
+			return chrome.NewLightpanda(path, spec.Args, log)
 		}
+		return chrome.New(path, spec.Args, log)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

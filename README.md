@@ -204,6 +204,7 @@ The browser lives in Docker; everything else runs with your local Go toolchain.
 make test        # unit tests with local Go (no browser needed)
 make testbase    # one-time: build the Chromium-equipped dev image
 make itest       # real-browser integration tests, source mounted (no rebuild)
+make testbase-lightpanda && make itest-lightpanda   # the same contract on Chromium and Lightpanda (Debian image)
 make up          # run the server via compose on http://localhost:3000
 make image ENGINE=chrome && make run-image   # build/run the runtime image directly
 ```
@@ -229,14 +230,21 @@ testdata/spa/         tiny SPAs used by integration tests
 ## Engines
 
 - **Chromium** (default, `--build-arg ENGINE=chrome`): the reference engine. Uses only four CDP areas — Page navigation, Fetch interception, Runtime evaluation, DOM capture — plus `Browser.getVersion` for health.
-- **Lightpanda** (`--build-arg ENGINE=lightpanda`, experimental): a much lighter browser that speaks CDP, but with partial DOM/Web API coverage and no layout. It graduates from experimental once the engine-comparison integration test renders the same SPA identically.
+- **Lightpanda** (`--build-arg ENGINE=lightpanda`): a much lighter browser that speaks CDP, with partial DOM/Web API coverage, no layout and no image loading. It passes the same integration contract as Chromium (completion signals, status codes, header forwarding, SSRF guard, cross-host redirect, script stripping) and renders the test SPA to the same content. **Compare it with Chromium on your own pages before switching**: an API it lacks can leave a page half-rendered.
+
+  | Same 40 renders of the test SPA, 4 at a time | Time | Peak memory | Image |
+  |---|---|---|---|
+  | Chromium | 10.0 s | 409 MB | 820 MB |
+  | Lightpanda 1.0.1 | 3.4 s | 32 MB | 167 MB |
+
+  How kagemusha drives it: `lightpanda serve` on a free loopback port, one CDP connection per render (Lightpanda allows one browser context per connection), the ` kagemusha` marker through `--user-agent-suffix` (it must not claim to be another browser), and **telemetry off** (`LIGHTPANDA_DISABLE_TELEMETRY=true`). The release binary is a glibc build, so the Lightpanda image is Debian-based; the version and checksums are pinned in the Dockerfile.
 
 ## Roadmap
 
 - [x] `/metrics` (Prometheus)
 - [x] In-process LRU cache
 - [ ] Stale-while-revalidate for the in-process cache
-- [ ] Lightpanda launcher + engine comparison test
+- [x] Lightpanda launcher + engine comparison test
 - [ ] Automatic browser restart after consecutive render failures
 - [ ] Smaller runtime image
 

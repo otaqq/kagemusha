@@ -94,7 +94,7 @@ var Specs = map[string]Spec{
 	"lightpanda": {
 		Name:        "lightpanda",
 		DefaultPath: "/usr/bin/lightpanda",
-		Args:        []string{"serve", "--host", "127.0.0.1", "--port", "0"},
+		Args:        []string{"serve"}, // the launcher adds --host/--port/--user-agent-suffix
 		HasLayout:   false,
 	},
 }
