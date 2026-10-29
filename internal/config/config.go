@@ -45,6 +45,7 @@ type Config struct {
 	ForwardHeadersHosts  []string
 	ResponseHeaders      http.Header
 	UserAgent            string
+	StripQueryParams     []string
 }
 
 // Default returns the default settings.
@@ -136,7 +137,22 @@ func Load(getenv Getenv) (Config, error) {
 		return c, err
 	}
 	c.UserAgent = getenv("KAGEMUSHA_USER_AGENT")
+	if c.StripQueryParams, err = stripParamsEnv(getenv, "KAGEMUSHA_STRIP_QUERY_PARAMS"); err != nil {
+		return c, err
+	}
 	return c, nil
+}
+
+// stripParamsEnv parses query parameter names; a trailing "*" matches any suffix (utm_*).
+func stripParamsEnv(getenv Getenv, key string) ([]string, error) {
+	list := listEnv(getenv, key)
+	for _, p := range list {
+		name := strings.TrimSuffix(p, "*")
+		if name == "" || strings.Contains(name, "*") {
+			return nil, fmt.Errorf("%s: invalid pattern %q (a name, optionally ending with *)", key, p)
+		}
+	}
+	return list, nil
 }
 
 var tokenRE = regexp.MustCompile("^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$")

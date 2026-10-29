@@ -43,6 +43,8 @@ type Options struct {
 	ForwardHeaders []string
 	// ResponseHeaders are added to every render response (e.g. X-Robots-Tag: noindex).
 	ResponseHeaders http.Header
+	// StripQueryParams are removed from the target URL before rendering and single-flight (a trailing * matches any suffix).
+	StripQueryParams []string
 }
 
 // New builds the http.Handler.
@@ -107,6 +109,7 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 		http.Error(w, "invalid url", http.StatusBadRequest)
 		return
 	}
+	stripQuery(u, s.opt.StripQueryParams)
 	if s.opt.Guard != nil {
 		if err := s.opt.Guard.CheckTarget(req.Context(), u); err != nil {
 			s.log.Warn("target rejected", "url", u.String(), "err", err)
@@ -149,6 +152,40 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 	s.log.Info("render", "url", rreq.URL, "status", res.StatusCode, "trigger", res.Trigger,
 		"duration_ms", res.Duration.Milliseconds(), "total_ms", time.Since(start).Milliseconds())
 	writeResult(w, res, s.opt.CacheControl)
+}
+
+// stripQuery removes matching parameters from u, keeping the order and encoding of the rest.
+func stripQuery(u *url.URL, patterns []string) {
+	if len(patterns) == 0 || u.RawQuery == "" {
+		return
+	}
+	var kept []string
+	for _, part := range strings.Split(u.RawQuery, "&") {
+		name, _, _ := strings.Cut(part, "=")
+		if n, err := url.QueryUnescape(name); err == nil {
+			name = n
+		}
+		if !matchParam(name, patterns) {
+			kept = append(kept, part)
+		}
+	}
+	u.RawQuery = strings.Join(kept, "&")
+	if u.RawQuery == "" {
+		u.ForceQuery = false
+	}
+}
+
+func matchParam(name string, patterns []string) bool {
+	for _, p := range patterns {
+		if prefix, ok := strings.CutSuffix(p, "*"); ok {
+			if len(name) >= len(prefix) && strings.EqualFold(name[:len(prefix)], prefix) {
+				return true
+			}
+		} else if strings.EqualFold(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // forwarded picks the configured headers from the incoming request.

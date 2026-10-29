@@ -138,3 +138,15 @@ func TestLoad_BlankResponseHeadersIsNil(t *testing.T) {
 		t.Fatalf("got %v %v", err, c.ResponseHeaders)
 	}
 }
+
+func TestLoad_StripQueryParams(t *testing.T) {
+	c, err := Load(env(map[string]string{"KAGEMUSHA_STRIP_QUERY_PARAMS": "utm_*, fbclid ,gclid"}))
+	if err != nil || len(c.StripQueryParams) != 3 || c.StripQueryParams[0] != "utm_*" || c.StripQueryParams[1] != "fbclid" {
+		t.Fatalf("got %v %v", err, c.StripQueryParams)
+	}
+	for _, bad := range []string{"*", "utm_*x", "*_source", "a**"} {
+		if _, err := Load(env(map[string]string{"KAGEMUSHA_STRIP_QUERY_PARAMS": bad})); err == nil {
+			t.Errorf("expected error for %q", bad)
+		}
+	}
+}

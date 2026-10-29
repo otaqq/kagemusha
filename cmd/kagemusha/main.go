@@ -70,12 +70,13 @@ func run() int {
 
 	guard := netguard.New(cfg.TargetHosts, cfg.AllowPrivateTargets, nil)
 	h := server.New(sup, flow.New(cfg.MaxConcurrent), server.Options{
-		CacheControl:    cfg.CacheControl,
-		DenyPaths:       cfg.DenyPaths,
-		QueueTimeout:    cfg.QueueTimeout,
-		Guard:           guard,
-		ForwardHeaders:  cfg.ForwardHeaders,
-		ResponseHeaders: cfg.ResponseHeaders,
+		CacheControl:     cfg.CacheControl,
+		DenyPaths:        cfg.DenyPaths,
+		QueueTimeout:     cfg.QueueTimeout,
+		Guard:            guard,
+		ForwardHeaders:   cfg.ForwardHeaders,
+		ResponseHeaders:  cfg.ResponseHeaders,
+		StripQueryParams: cfg.StripQueryParams,
 		Request: render.Request{
 			ReadyFlag: cfg.ReadyFlag, IdleQuiet: cfg.IdleQuiet, PageTimeout: cfg.PageTimeout,
 			BlockDomains: cfg.BlockDomains, AllowDomains: cfg.AllowDomains,

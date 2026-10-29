@@ -228,3 +228,40 @@ func TestRender_ResponseHeadersOnEveryRenderResponse(t *testing.T) {
 		}
 	}
 }
+
+func TestStripQuery_KeepsOrderAndEncodingOfRemainingParams(t *testing.T) {
+	patterns := []string{"utm_*", "fbclid", "GCLID"}
+	cases := map[string]string{
+		"page=2&utm_source=ig&q=a%20b&fbclid=x&utm_medium=cpc": "page=2&q=a%20b",
+		"UTM_Source=ig&gclid=1":                                "",
+		"q=1&utm=keep&utm_=drop&fbclid2=keep":                  "q=1&utm=keep&fbclid2=keep",
+		"a=1&&b&%zz=1&utm_source":                              "a=1&&b&%zz=1",
+		"":                                                     "",
+	}
+	for in, want := range cases {
+		u := &url.URL{RawQuery: in}
+		stripQuery(u, patterns)
+		if u.RawQuery != want {
+			t.Errorf("%q: want %q, got %q", in, want, u.RawQuery)
+		}
+	}
+	u := &url.URL{RawQuery: "utm_source=x", ForceQuery: true}
+	stripQuery(u, patterns)
+	if u.String() != "" || u.ForceQuery {
+		t.Fatalf("an emptied query must not leave a trailing '?': %q", u.String())
+	}
+}
+
+func TestRender_StrippedParamsShareOneRenderOfTheCleanURL(t *testing.T) {
+	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "x"}, delay: 100 * time.Millisecond}
+	h := New(f, flow.New(4), Options{QueueTimeout: time.Second, StripQueryParams: []string{"utm_*", "fbclid"}}, nil)
+	var wg sync.WaitGroup
+	for _, q := range []string{"?utm_source=ig&id=1", "?id=1&fbclid=abc", "?id=1"} {
+		wg.Go(func() { get(h, "/https://shop.example/items"+q) })
+		time.Sleep(10 * time.Millisecond)
+	}
+	wg.Wait()
+	if f.calls != 1 || f.reqs[0].URL != "https://shop.example/items?id=1" {
+		t.Fatalf("want one render of the clean URL, got calls=%d reqs=%v", f.calls, f.reqs)
+	}
+}
