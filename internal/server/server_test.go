@@ -428,3 +428,20 @@ func TestRender_RenderLongerThanQueueTimeoutStillSucceeds(t *testing.T) {
 		t.Fatalf("queue timeout must not cut a started render: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+type stallGate struct{ stalled bool }
+
+func (s stallGate) Stalled(time.Duration) bool { return s.stalled }
+
+func TestHealthz_503WhenFlowControlIsStalled(t *testing.T) {
+	f := &fakeRenderer{healthy: true}
+	if rec := get(newHandler(f, Options{StallTimeout: time.Minute, Stall: stallGate{true}}), "/healthz"); rec.Code != 503 {
+		t.Fatalf("stalled: want 503, got %d", rec.Code)
+	}
+	if rec := get(newHandler(f, Options{StallTimeout: time.Minute, Stall: stallGate{false}}), "/healthz"); rec.Code != 200 {
+		t.Fatalf("not stalled: want 200, got %d", rec.Code)
+	}
+	if rec := get(newHandler(f, Options{StallTimeout: time.Minute}), "/healthz"); rec.Code != 200 {
+		t.Fatalf("defaults to the gate, which is idle: %d", rec.Code)
+	}
+}

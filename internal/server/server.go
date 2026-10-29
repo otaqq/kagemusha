@@ -29,6 +29,11 @@ type Renderer interface {
 	Healthy(ctx context.Context) bool
 }
 
+// StallDetector reports a flow-control stall (implemented by flow.Gate).
+type StallDetector interface {
+	Stalled(d time.Duration) bool
+}
+
 // TargetGuard validates the URL to render (SSRF protection). Implemented by netguard.Guard.
 type TargetGuard interface {
 	CheckTarget(ctx context.Context, u *url.URL) error
@@ -52,12 +57,19 @@ type Options struct {
 	Cache *cache.LRU[render.Result]
 	// Metrics enables GET /metrics and request/render accounting (nil disables both).
 	Metrics *metrics.Metrics
+	// StallTimeout makes /healthz answer 503 when every slot has been busy this long without progress (0 disables).
+	StallTimeout time.Duration
+	// Stall overrides the stall detector (defaults to the gate; replaced in tests).
+	Stall StallDetector
 }
 
 // New builds the http.Handler.
 func New(r Renderer, gate *flow.Gate, opt Options, log *slog.Logger) http.Handler {
 	if log == nil {
 		log = slog.Default()
+	}
+	if opt.Stall == nil {
+		opt.Stall = gate
 	}
 	s := &server{r: r, gate: gate, opt: opt, log: log}
 	mux := http.NewServeMux()
@@ -90,6 +102,11 @@ func (s *server) healthz(w http.ResponseWriter, req *http.Request) {
 	noStore(w)
 	if !s.r.Healthy(req.Context()) {
 		http.Error(w, "engine unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if s.opt.Stall.Stalled(s.opt.StallTimeout) {
+		s.log.Warn("healthz: flow control stalled", "stall_timeout", s.opt.StallTimeout)
+		http.Error(w, "stalled", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

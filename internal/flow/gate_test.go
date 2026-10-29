@@ -300,3 +300,40 @@ func TestDo_QueueTimeoutRacingStartIsConsistent(t *testing.T) {
 		t.Fatalf("gate unusable: %v %v", v, err)
 	}
 }
+
+func TestStalled_FullSlotsWithoutCompletion(t *testing.T) {
+	g := New(1)
+	if g.Stalled(time.Millisecond) {
+		t.Fatal("free slots are never stalled")
+	}
+	release := make(chan struct{})
+	go g.Do(context.Background(), context.Background(), "a", 0, func(ctx context.Context) (any, error) { <-release; return nil, nil }) //nolint:errcheck
+	time.Sleep(30 * time.Millisecond)
+	if g.Stalled(time.Hour) {
+		t.Fatal("not stalled before the timeout")
+	}
+	if !g.Stalled(20 * time.Millisecond) {
+		t.Fatal("all slots busy with no completion for the timeout must be stalled")
+	}
+	if g.Stalled(0) {
+		t.Fatal("0 disables the check")
+	}
+	close(release)
+	time.Sleep(10 * time.Millisecond)
+	g.Do(context.Background(), context.Background(), "b", 0, func(ctx context.Context) (any, error) { return nil, nil }) //nolint:errcheck
+	if g.Stalled(20 * time.Millisecond) {
+		t.Fatal("free slots after completion")
+	}
+}
+
+func TestStalled_RecentCompletionKeepsBusyGateHealthy(t *testing.T) {
+	g := New(1)
+	release := make(chan struct{})
+	defer close(release)
+	g.Do(context.Background(), context.Background(), "done", 0, func(ctx context.Context) (any, error) { return nil, nil })               //nolint:errcheck
+	go g.Do(context.Background(), context.Background(), "busy", 0, func(ctx context.Context) (any, error) { <-release; return nil, nil }) //nolint:errcheck
+	time.Sleep(10 * time.Millisecond)
+	if g.Stalled(time.Second) {
+		t.Fatal("a render finished within the timeout: busy, not stalled")
+	}
+}

@@ -64,7 +64,7 @@ Every wait has a deadline. A dead browser is a failed render, never a dead proce
 |---|---|
 | `GET /render?url=<absolute URL>` | Render and return HTML |
 | `GET /https://host/path` | prerender-compatible form of the above |
-| `GET /healthz` | `200` when the browser answers CDP, `503` otherwise |
+| `GET /healthz` | `200` when the browser answers CDP and flow control is moving, `503` otherwise |
 | `GET /metrics` | Prometheus metrics (see below; `KAGEMUSHA_METRICS=off` removes it) |
 
 Response headers: `Cache-Control` (per contract above), `X-Kagemusha-Trigger: ready|idle|timeout|redirect`, `Location` on a cross-host redirect, and with the in-process cache on, `X-Kagemusha-Cache: hit|miss` plus `Age` on hits.
@@ -98,6 +98,7 @@ All settings are environment variables with safe defaults.
 | `KAGEMUSHA_WORKER_MAX_AGE` | `6h` | Worker exits (code 0) after this age (randomly up to 20% earlier) |
 | `KAGEMUSHA_BROWSER_RESTART_PERIOD` | `10m` | Planned browser restart period |
 | `KAGEMUSHA_WATCHDOG_TIMEOUT_MS` | `10000` | Restart the browser after this long unresponsive |
+| `KAGEMUSHA_STALL_TIMEOUT` | `5m` | `/healthz` answers `503` when every slot has been busy this long with no render starting or finishing, so the orchestrator replaces the worker. `0` disables |
 | `KAGEMUSHA_TARGET_HOSTS` | – | If set, only these hosts (subdomains included) may be rendered; others get `403` |
 | `KAGEMUSHA_ALLOW_PRIVATE_TARGETS` | `off` | Allow private, loopback and link-local addresses (local development only) |
 | `KAGEMUSHA_FORWARD_HEADERS` | – | Incoming request headers passed on to the page, e.g. `Authorization` for a Basic-auth staging site |

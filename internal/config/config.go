@@ -53,6 +53,7 @@ type Config struct {
 	RedirectCrossHost    bool
 	StripScripts         bool
 	Metrics              bool
+	StallTimeout         time.Duration
 }
 
 // Default returns the default settings.
@@ -72,6 +73,7 @@ func Default() Config {
 		WatchdogTimeout:      10 * time.Second,
 		CacheMaxEntries:      100,
 		Metrics:              true,
+		StallTimeout:         5 * time.Minute,
 	}
 }
 
@@ -169,6 +171,12 @@ func Load(getenv Getenv) (Config, error) {
 	}
 	if c.Metrics, err = boolEnv(getenv, "KAGEMUSHA_METRICS", c.Metrics); err != nil {
 		return c, err
+	}
+	if c.StallTimeout, err = durEnv(getenv, "KAGEMUSHA_STALL_TIMEOUT", c.StallTimeout); err != nil {
+		return c, err
+	}
+	if c.StallTimeout < 0 {
+		return c, fmt.Errorf("KAGEMUSHA_STALL_TIMEOUT: must be >= 0")
 	}
 	switch v := strings.ToLower(getenv("KAGEMUSHA_CROSS_HOST_NAVIGATION")); v {
 	case "", "follow":

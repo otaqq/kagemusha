@@ -105,6 +105,7 @@ func run() int {
 		StripQueryParams: cfg.StripQueryParams,
 		Cache:            pageCache,
 		Metrics:          m,
+		StallTimeout:     cfg.StallTimeout,
 		Request: render.Request{
 			ReadyFlag: cfg.ReadyFlag, IdleQuiet: cfg.IdleQuiet, PageTimeout: cfg.PageTimeout,
 			BlockDomains: cfg.BlockDomains, AllowDomains: cfg.AllowDomains, BlockResourceTypes: cfg.BlockResourceTypes,

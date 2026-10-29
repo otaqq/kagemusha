@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -14,9 +15,10 @@ var ErrQueueTimeout = errors.New("flow: queue wait timed out")
 
 // Gate is the flow controller.
 type Gate struct {
-	slots chan struct{}
-	mu    sync.Mutex
-	calls map[string]*call
+	slots    chan struct{}
+	mu       sync.Mutex
+	calls    map[string]*call
+	progress atomic.Int64 // unix nanos of the last slot taken or released
 }
 
 type call struct {
@@ -37,7 +39,9 @@ func New(max int) *Gate {
 	if max < 1 {
 		max = 1
 	}
-	return &Gate{slots: make(chan struct{}, max), calls: map[string]*call{}}
+	g := &Gate{slots: make(chan struct{}, max), calls: map[string]*call{}}
+	g.touch()
+	return g
 }
 
 // Do runs fn for key. Callers with the same key in flight share its result; fn runs once.
@@ -81,7 +85,8 @@ func (g *Gate) Do(ctx context.Context, runCtx context.Context, key string, queue
 		c.started = true
 		close(c.startedCh)
 		g.mu.Unlock()
-		defer func() { <-g.slots }()
+		g.touch()
+		defer func() { <-g.slots; g.touch() }()
 		defer func() {
 			if r := recover(); r != nil {
 				c.err = errors.New("flow: render panicked")
@@ -141,6 +146,14 @@ func (g *Gate) leaveLocked(key string, c *call) {
 			delete(g.calls, key)
 		}
 	}
+}
+
+func (g *Gate) touch() { g.progress.Store(time.Now().UnixNano()) }
+
+// Stalled reports whether every slot has been busy for at least d with no run starting or finishing
+// (renders are bounded by their own deadlines, so this means something hung). d <= 0 disables the check.
+func (g *Gate) Stalled(d time.Duration) bool {
+	return d > 0 && len(g.slots) == cap(g.slots) && time.Since(time.Unix(0, g.progress.Load())) >= d
 }
 
 // Stats returns the number of runs holding a slot and the number of keys waiting for one (for metrics).

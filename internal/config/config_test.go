@@ -225,3 +225,17 @@ func TestLoad_Metrics(t *testing.T) {
 		t.Fatal("invalid boolean must fail")
 	}
 }
+
+func TestLoad_StallTimeout(t *testing.T) {
+	if c, err := Load(env(nil)); err != nil || c.StallTimeout != 5*time.Minute {
+		t.Fatalf("default 5m: %v %+v", err, c)
+	}
+	if c, err := Load(env(map[string]string{"KAGEMUSHA_STALL_TIMEOUT": "0"})); err != nil || c.StallTimeout != 0 {
+		t.Fatalf("0 disables: %v %+v", err, c)
+	}
+	for _, bad := range []string{"soon", "-1m"} {
+		if _, err := Load(env(map[string]string{"KAGEMUSHA_STALL_TIMEOUT": bad})); err == nil {
+			t.Errorf("expected error for %q", bad)
+		}
+	}
+}
