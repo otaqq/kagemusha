@@ -61,7 +61,7 @@ func Default() Config {
 		Engine:               EngineChrome,
 		Port:                 3000,
 		MaxConcurrent:        4,
-		QueueTimeout:         45 * time.Second,
+		QueueTimeout:         20 * time.Second,
 		ReadyFlag:            true,
 		IdleQuiet:            3 * time.Second,
 		PageTimeout:          30 * time.Second,

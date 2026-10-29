@@ -80,7 +80,7 @@ All settings are environment variables with safe defaults.
 | `KAGEMUSHA_LISTEN_HOST` | – (all interfaces) | Listen address, e.g. `127.0.0.1` behind a local reverse proxy |
 | `KAGEMUSHA_PORT` | `3000` | Listen port |
 | `KAGEMUSHA_MAX_CONCURRENT` | `4` | Concurrent renders per worker |
-| `KAGEMUSHA_QUEUE_TIMEOUT_MS` | `45000` | Max time a request waits for a slot. Keep it **below** your LB idle timeout |
+| `KAGEMUSHA_QUEUE_TIMEOUT_MS` | `20000` | Max time a request waits for a slot (`503` after that). A render that started is not cut by it |
 | `KAGEMUSHA_READY_FLAG` | `on` | Honor `window.prerenderReady` |
 | `KAGEMUSHA_IDLE_QUIET_MS` | `3000` | Network-idle quiet window (fallback completion) |
 | `KAGEMUSHA_PAGE_TIMEOUT_MS` | `30000` | Absolute render limit |
@@ -160,7 +160,7 @@ On a single VPS, let the reverse proxy do Basic auth and bot routing, and keep k
 ### Operational notes
 
 - **Amplification**: one render fans out into dozens of sub-requests. Your own WAF rate limits will see kagemusha's egress IP as a burst. Use `KAGEMUSHA_BLOCK_DOMAINS` to drop analytics/ads/session-recording beacons — it also makes renders finish faster.
-- **Timeouts**: `KAGEMUSHA_QUEUE_TIMEOUT_MS` + `KAGEMUSHA_PAGE_TIMEOUT_MS` should stay below the LB idle timeout, or clients disconnect before you answer.
+- **Timeouts**: the slowest answer is `KAGEMUSHA_QUEUE_TIMEOUT_MS` + `KAGEMUSHA_PAGE_TIMEOUT_MS` + 5 s (capture). Keep that below the LB / CDN idle timeout, or clients disconnect before you answer. The defaults (20 s + 30 s + 5 s) fit a 60 s timeout.
 - **Impatient preview bots** (Slack, Facebook: 5–9 s client timeouts) only need OGP tags. Serve them a lightweight endpoint upstream if full renders are slow.
 - **Caching is two-layered**: the CDN is the main cache; the in-process cache (`KAGEMUSHA_CACHE_TTL`, short is enough) absorbs bots retrying right after a render. Only `200` is cached, under the same key as single-flight, so a page rendered with forwarded credentials is served only to the same credentials. Set `KAGEMUSHA_CACHE_CONTROL` deliberately; the default `no-store` means *the CDN caches nothing* until you decide otherwise.
 - **/dev/shm**: Chromium needs shared memory. `--disable-dev-shm-usage` is on, but give the container `--shm-size=512m` anyway.

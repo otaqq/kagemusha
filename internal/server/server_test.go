@@ -395,13 +395,13 @@ func TestMetrics_OutcomesAndActualRenders(t *testing.T) {
 func TestMetrics_SharedRenderCountsOnceQueueTimeoutCounts(t *testing.T) {
 	m := metrics.New()
 	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "x", StatusCode: 200, Trigger: render.TriggerIdle}, delay: 100 * time.Millisecond}
-	h := New(f, flow.New(1), Options{Metrics: m, QueueTimeout: 150 * time.Millisecond}, nil)
+	h := New(f, flow.New(1), Options{Metrics: m, QueueTimeout: 50 * time.Millisecond}, nil)
 	var wg sync.WaitGroup
 	for range 3 {
 		wg.Go(func() { get(h, "/render?url=https://shop.example/a") })
 	}
 	time.Sleep(10 * time.Millisecond)
-	wg.Go(func() { get(h, "/render?url=https://shop.example/b") }) // 100ms behind a + 100ms render > 150ms
+	wg.Go(func() { get(h, "/render?url=https://shop.example/b") }) // waits ~90ms for a slot > 50ms queue timeout
 	wg.Wait()
 	body := get(h, "/metrics").Body.String()
 	for _, want := range []string{
@@ -418,5 +418,13 @@ func TestMetrics_SharedRenderCountsOnceQueueTimeoutCounts(t *testing.T) {
 func TestMetrics_EndpointAbsentWithoutMetrics(t *testing.T) {
 	if rec := get(newHandler(&fakeRenderer{healthy: true}, Options{}), "/metrics"); rec.Code != 404 {
 		t.Fatalf("want 404, got %d", rec.Code)
+	}
+}
+
+func TestRender_RenderLongerThanQueueTimeoutStillSucceeds(t *testing.T) {
+	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "slow"}, delay: 120 * time.Millisecond}
+	h := New(f, flow.New(1), Options{QueueTimeout: 50 * time.Millisecond}, nil)
+	if rec := get(h, "/render?url=https://shop.example/"); rec.Code != 200 || rec.Body.String() != "slow" {
+		t.Fatalf("queue timeout must not cut a started render: %d %s", rec.Code, rec.Body.String())
 	}
 }

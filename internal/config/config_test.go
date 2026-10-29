@@ -12,7 +12,7 @@ func TestLoad_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Engine != EngineChrome || c.Port != 3000 || c.MaxConcurrent != 4 || c.QueueTimeout != 45*time.Second ||
+	if c.Engine != EngineChrome || c.Port != 3000 || c.MaxConcurrent != 4 || c.QueueTimeout != 20*time.Second ||
 		!c.ReadyFlag || c.CacheControl != "no-store" || c.WorkerMaxAge != 6*time.Hour {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}

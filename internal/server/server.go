@@ -158,11 +158,9 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 		w.Header().Set("X-Kagemusha-Cache", "miss")
 	}
 
-	waitCtx, cancel := context.WithTimeout(req.Context(), s.opt.QueueTimeout)
-	defer cancel()
 	start := time.Now()
 	// Run the render with its own ctx so a primary disconnect does not cancel it
-	v, err := s.gate.Do(waitCtx, context.Background(), key, func(ctx context.Context) (any, error) {
+	v, err := s.gate.Do(req.Context(), context.Background(), key, s.opt.QueueTimeout, func(ctx context.Context) (any, error) {
 		res, err := s.r.Render(ctx, rreq)
 		if err == nil {
 			s.opt.Metrics.Render(statusOf(res), string(res.Trigger), res.Duration)
