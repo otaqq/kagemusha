@@ -12,28 +12,97 @@ permissions:
   contents: read
 
 env:
-  TRIVY_IMAGE: aquasec/trivy:0.76.0
+  GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.9.0
+  TRIVY_VERSION: 0.76.0
 
 jobs:
-  govulncheck:
+  scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      issues: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
-
-  trivy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
+      - name: Install Trivy
+        run: |
+          base=https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}
+          f=trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$base/$f" -O "$base/trivy_${TRIVY_VERSION}_checksums.txt"
+          grep " $f\$" "trivy_${TRIVY_VERSION}_checksums.txt" | sha256sum -c -
+          mkdir -p bin && tar -xzf "$f" -C bin trivy
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: docker build -f docker/Dockerfile --target runtime --build-arg ENGINE=chrome -t kagemusha:chrome .
-      - name: Scan image
-        run: >-
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE"
-          image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed kagemusha:chrome
-      - name: Scan repository
-        run: >-
-          docker run --rm -v "$PWD:/src:ro" -w /src "$TRIVY_IMAGE"
-          fs --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,misconfig,secret .
+
+      - name: Scan (SARIF)
+        if: github.server_url == 'https://github.com'
+        run: |
+          mkdir -p sarif
+          go run "$GOVULNCHECK" -format sarif ./... > sarif/govulncheck.sarif
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed --quiet --format sarif -o sarif/trivy-image.sarif kagemusha:chrome
+          trivy fs --severity HIGH,CRITICAL --ignore-unfixed --quiet --scanners vuln,misconfig,secret --skip-dirs sarif --format sarif -o sarif/trivy-repo.sarif .
+      - if: github.server_url == 'https://github.com'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sarif/govulncheck.sarif
+          category: govulncheck
+      - if: github.server_url == 'https://github.com'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sarif/trivy-image.sarif
+          category: trivy-image
+      - if: github.server_url == 'https://github.com'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sarif/trivy-repo.sarif
+          category: trivy-repo
+
+      - name: Scan (report)
+        if: github.server_url != 'https://github.com'
+        run: |
+          mkdir -p report
+          s=0
+          go run "$GOVULNCHECK" ./... > report/govulncheck.txt 2>&1 || s=1
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed --quiet --exit-code 1 -o report/trivy-image.txt kagemusha:chrome || s=1
+          trivy fs --severity HIGH,CRITICAL --ignore-unfixed --quiet --scanners vuln,misconfig,secret --skip-dirs report --exit-code 1 -o report/trivy-repo.txt . || s=1
+          echo "found=$s" >> "$GITHUB_ENV"
+      - name: Report as an issue
+        if: github.server_url != 'https://github.com'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        run: |
+          node <<'EOF'
+          const fs = require("fs");
+          const api = `${process.env.GITHUB_SERVER_URL}/api/v1/repos/${process.env.GITHUB_REPOSITORY}`;
+          const headers = { Authorization: `token ${process.env.TOKEN}`, "Content-Type": "application/json" };
+          const call = async (method, path, body) => {
+            const r = await fetch(api + path, { method, headers, body: body && JSON.stringify(body) });
+            if (!r.ok) throw new Error(`${method} ${path}: ${r.status} ${await r.text()}`);
+            return r.status === 204 ? null : r.json();
+          };
+          const title = "Security scan: vulnerabilities found";
+          const found = process.env.found === "1";
+          (async () => {
+            const open = (await call("GET", "/issues?state=open&type=issues&limit=50")).find((i) => i.title === title);
+            if (found) {
+              const section = (name, file) =>
+                `### ${name}\n\n\`\`\`\n${fs.readFileSync(`report/${file}`, "utf8").slice(0, 20000)}\n\`\`\`\n`;
+              const body = [
+                `Run: ${process.env.RUN_URL}`,
+                section("govulncheck", "govulncheck.txt"),
+                section("Trivy: image", "trivy-image.txt"),
+                section("Trivy: repository", "trivy-repo.txt"),
+              ].join("\n");
+              if (open) await call("PATCH", `/issues/${open.number}`, { body });
+              else await call("POST", "/issues", { title, body });
+            } else if (open) {
+              await call("POST", `/issues/${open.number}/comments`, { body: `Clean as of ${process.env.RUN_URL}` });
+              await call("PATCH", `/issues/${open.number}`, { state: "closed" });
+            }
+          })().catch((e) => { console.error(e.message); process.exit(1); });
+          EOF
