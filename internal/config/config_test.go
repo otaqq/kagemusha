@@ -171,3 +171,16 @@ func TestLoad_Cache(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_BlockResourceTypes(t *testing.T) {
+	c, err := Load(env(map[string]string{"KAGEMUSHA_BLOCK_RESOURCE_TYPES": "image, MEDIA,font,xhr"}))
+	if err != nil || len(c.BlockResourceTypes) != 4 || c.BlockResourceTypes[0] != "Image" || c.BlockResourceTypes[1] != "Media" ||
+		c.BlockResourceTypes[2] != "Font" || c.BlockResourceTypes[3] != "XHR" {
+		t.Fatalf("got %v %v", err, c.BlockResourceTypes)
+	}
+	for _, bad := range []string{"Document", "document", "Picture"} {
+		if _, err := Load(env(map[string]string{"KAGEMUSHA_BLOCK_RESOURCE_TYPES": bad})); err == nil {
+			t.Errorf("expected error for %q", bad)
+		}
+	}
+}

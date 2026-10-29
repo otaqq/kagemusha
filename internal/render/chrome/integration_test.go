@@ -239,3 +239,33 @@ func TestIntegration_GuardBlocksSubRequestsAndUserAgentOverride(t *testing.T) {
 		t.Fatalf("user agent override: %q", ua)
 	}
 }
+
+func TestIntegration_BlockedResourceTypesAreNeverFetchedButStayInHTML(t *testing.T) {
+	e := launch(t)
+	rec := &recorder{seen: map[string]http.Header{}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(r)
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<html><head><style>@font-face{font-family:F;src:url(/f.woff2)}body{font-family:F}</style></head>
+<body><img src="/photo.png" alt="item photo"><div id="app">text</div><script>window.prerenderReady = true;</script></body></html>`))
+		case "/photo.png":
+			w.Header().Set("Content-Type", "image/png")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	res, err := e.Render(context.Background(), render.Request{URL: srv.URL + "/", ReadyFlag: false, IdleQuiet: 500 * time.Millisecond, PageTimeout: 10 * time.Second,
+		BlockResourceTypes: []string{"Image", "Font"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.get("/photo.png") != nil || rec.get("/f.woff2") != nil {
+		t.Fatal("blocked resource types must never reach the server")
+	}
+	if res.StatusCode != 200 || !strings.Contains(res.HTML, `<img src="/photo.png" alt="item photo">`) {
+		t.Fatalf("the tag must stay in the HTML: status=%d html=%s", res.StatusCode, res.HTML)
+	}
+}

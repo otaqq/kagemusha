@@ -30,6 +30,8 @@ type Request struct {
 	PageTimeout  time.Duration
 	BlockDomains []string
 	AllowDomains []string
+	// BlockResourceTypes are CDP resource types never fetched (e.g. Image, Media, Font).
+	BlockResourceTypes []string
 	// Guard blocks requests to disallowed hosts (nil disables the check).
 	Guard HostGuard
 	// Headers are added to requests for the target's origin and ForwardHosts (taken from the incoming request).

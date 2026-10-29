@@ -85,6 +85,7 @@ All settings are environment variables with safe defaults.
 | `KAGEMUSHA_PAGE_TIMEOUT_MS` | `30000` | Absolute render limit |
 | `KAGEMUSHA_BLOCK_DOMAINS` | – | Comma-separated domains to block (subdomains included) |
 | `KAGEMUSHA_ALLOW_DOMAINS` | – | If set, everything not listed is blocked |
+| `KAGEMUSHA_BLOCK_RESOURCE_TYPES` | – | Resource types never fetched, e.g. `Image,Media,Font` (CDP names; `Document` cannot be blocked). Tags stay in the HTML, so crawlers still see them |
 | `KAGEMUSHA_DENY_PATHS` | – | Path prefixes answered with `404` without rendering |
 | `KAGEMUSHA_STRIP_QUERY_PARAMS` | – | Query parameters removed before rendering and single-flight, e.g. `utm_*,fbclid,gclid` (trailing `*` matches any suffix). Match your CDN cache key |
 | `KAGEMUSHA_CACHE_CONTROL` | `no-store` | `Cache-Control` for `200` HTML |

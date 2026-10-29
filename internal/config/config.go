@@ -7,6 +7,7 @@ import (
 	"net/textproto"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +49,7 @@ type Config struct {
 	StripQueryParams     []string
 	CacheTTL             time.Duration
 	CacheMaxEntries      int
+	BlockResourceTypes   []string
 }
 
 // Default returns the default settings.
@@ -155,7 +157,29 @@ func Load(getenv Getenv) (Config, error) {
 	if c.CacheMaxEntries < 1 {
 		return c, fmt.Errorf("KAGEMUSHA_CACHE_MAX_ENTRIES: must be >= 1")
 	}
+	if c.BlockResourceTypes, err = resourceTypesEnv(getenv, "KAGEMUSHA_BLOCK_RESOURCE_TYPES"); err != nil {
+		return c, err
+	}
 	return c, nil
+}
+
+// resourceTypes are the CDP Network.ResourceType names that may be blocked (Document would block the page itself).
+var resourceTypes = []string{
+	"Stylesheet", "Image", "Media", "Font", "Script", "TextTrack", "XHR", "Fetch", "Prefetch", "EventSource",
+	"WebSocket", "Manifest", "SignedExchange", "Ping", "CSPViolationReport", "Preflight", "FedCM", "Other",
+}
+
+// resourceTypesEnv parses resource type names case-insensitively into their CDP spelling.
+func resourceTypesEnv(getenv Getenv, key string) ([]string, error) {
+	var out []string
+	for _, v := range listEnv(getenv, key) {
+		i := slices.IndexFunc(resourceTypes, func(t string) bool { return strings.EqualFold(t, v) })
+		if i < 0 {
+			return nil, fmt.Errorf("%s: unknown or unblockable resource type %q", key, v)
+		}
+		out = append(out, resourceTypes[i])
+	}
+	return out, nil
 }
 
 // stripParamsEnv parses query parameter names; a trailing "*" matches any suffix (utm_*).

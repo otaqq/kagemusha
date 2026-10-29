@@ -14,11 +14,12 @@ import (
 )
 
 // filter is the per-render request policy applied through Fetch interception:
-// the domain block / allow lists, the host guard, and header forwarding.
+// the domain block / allow lists, blocked resource types, the host guard, and header forwarding.
 // When allow is set, everything outside it is blocked.
 type filter struct {
 	block []string
 	allow []string
+	types map[network.ResourceType]bool
 
 	guard   render.HostGuard
 	mu      sync.Mutex
@@ -32,10 +33,14 @@ type filter struct {
 func newFilter(req render.Request) *filter {
 	f := &filter{
 		block:        netguard.Normalize(req.BlockDomains),
+		types:        map[network.ResourceType]bool{},
 		allow:        netguard.Normalize(req.AllowDomains),
 		guard:        req.Guard,
 		checked:      map[string]bool{},
 		forwardHosts: netguard.Normalize(req.ForwardHosts),
+	}
+	for _, t := range req.BlockResourceTypes {
+		f.types[network.ResourceType(t)] = true
 	}
 	if len(req.Headers) > 0 {
 		if u, err := url.Parse(req.URL); err == nil {
@@ -48,8 +53,11 @@ func newFilter(req render.Request) *filter {
 
 // active reports whether requests need to be intercepted at all.
 func (f *filter) active() bool {
-	return len(f.block) > 0 || len(f.allow) > 0 || f.guard != nil || len(f.headers) > 0
+	return len(f.block) > 0 || len(f.allow) > 0 || len(f.types) > 0 || f.guard != nil || len(f.headers) > 0
 }
+
+// blockedType reports whether requests of this resource type are never fetched.
+func (f *filter) blockedType(t network.ResourceType) bool { return f.types[t] }
 
 // blocked reports whether the request URL should be blocked, matching on host name (subdomains included).
 func (f *filter) blocked(ctx context.Context, rawURL string) bool {

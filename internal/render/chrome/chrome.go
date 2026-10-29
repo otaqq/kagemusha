@@ -337,7 +337,7 @@ func statusCode(httpStatus, declared int) int {
 
 // decide continues or fails a request paused by Fetch, according to the filter.
 func (e *Engine) decide(tabCtx context.Context, ev fetch.EventRequestPaused, f *filter) {
-	if f.blocked(tabCtx, ev.Request.URL) {
+	if f.blockedType(ev.ResourceType) || f.blocked(tabCtx, ev.Request.URL) {
 		_, _ = chromedp.Call(tabCtx, fetch.FailRequest, fetch.FailRequestParams{RequestID: ev.RequestID, ErrorReason: network.ErrorReasonBlockedByClient})
 		return
 	}

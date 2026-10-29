@@ -143,3 +143,19 @@ func TestFlagsFromArgs(t *testing.T) {
 		t.Fatalf("want 2 flags, got %d", len(opts))
 	}
 }
+
+func TestFilter_BlocksConfiguredResourceTypes(t *testing.T) {
+	f := newFilter(render.Request{BlockResourceTypes: []string{"Image", "Font"}})
+	if !f.active() {
+		t.Fatal("resource types alone must activate interception")
+	}
+	if !f.blockedType(network.ResourceTypeImage) || !f.blockedType(network.ResourceTypeFont) {
+		t.Fatal("configured types must be blocked")
+	}
+	if f.blockedType(network.ResourceTypeDocument) || f.blockedType(network.ResourceTypeScript) || f.blockedType(network.ResourceTypeXHR) {
+		t.Fatal("other types must pass")
+	}
+	if newFilter(render.Request{}).blockedType(network.ResourceTypeImage) {
+		t.Fatal("nothing configured, nothing blocked")
+	}
+}
