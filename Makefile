@@ -1,38 +1,42 @@
 # Development targets for kagemusha. Steps that need a browser run in Docker.
 IMAGE ?= kagemusha
 ENGINE ?= chrome
-DOCKER_BUILD := DOCKER_BUILDKIT=0 docker build -f docker/Dockerfile
+DOCKER_BUILD := docker build
 
-.PHONY: test itest testbase itest-lightpanda testbase-lightpanda build image up down run-image lint
+.PHONY: test itest testbase itest-image build image image-slim images up down run-image lint
 
 ## Unit tests with the local Go toolchain (no browser needed)
 test:
 	go vet ./... && go test ./... -cover
 
-## Build image with Chromium for integration tests (slow only the first time)
+## Development image with Go, Chromium and Lightpanda (slow only the first time)
 testbase:
-	$(DOCKER_BUILD) --target testbase -t $(IMAGE):testbase .
+	$(DOCKER_BUILD) -f docker/Dockerfile.slim --target testbase -t $(IMAGE):testbase .
 
-## Real-browser integration tests (source is mounted, no rebuild needed)
+## Real-browser integration tests on both engines (source is mounted, no rebuild needed)
 itest:
-	docker run --rm -v "$(PWD):/src" -w /src -e KAGEMUSHA_ENGINE_PATH=/usr/bin/chromium \
-	  $(IMAGE):testbase go test -tags integration -count=1 ./...
+	docker run --rm -v "$(PWD):/src" -w /src $(IMAGE):testbase go test -tags integration -count=1 ./...
 
-## Image with Chromium and Lightpanda (Debian) for the engine comparison tests
-testbase-lightpanda:
-	$(DOCKER_BUILD) --target testbase-lightpanda -t $(IMAGE):testbase-lightpanda .
+## Integration tests inside the production (distroless) image of ENGINE
+itest-image:
+	$(DOCKER_BUILD) -f docker/Dockerfile --build-arg ENGINE=$(ENGINE) --target test .
 
-## Run the render integration tests on both engines (source is mounted)
-itest-lightpanda:
-	docker run --rm -v "$(PWD):/src" -w /src $(IMAGE):testbase-lightpanda go test -tags integration -count=1 ./internal/render/chrome/
-
-## Build the binary locally (run it in a container, which has Chromium)
+## Build the binary locally (run it in a container, which has a browser)
 build:
 	CGO_ENABLED=0 go build -o bin/kagemusha ./cmd/kagemusha
 
-## Runtime image (ENGINE=chrome|lightpanda)
+## Production image (distroless, ENGINE=chrome|lightpanda)
 image:
-	$(DOCKER_BUILD) --target runtime --build-arg ENGINE=$(ENGINE) -t $(IMAGE):$(ENGINE) .
+	$(DOCKER_BUILD) -f docker/Dockerfile --build-arg ENGINE=$(ENGINE) -t $(IMAGE):$(ENGINE) .
+
+## Image with a shell (debian:trixie-slim, ENGINE=chrome|lightpanda)
+image-slim:
+	$(DOCKER_BUILD) -f docker/Dockerfile.slim --build-arg ENGINE=$(ENGINE) -t $(IMAGE):$(ENGINE)-slim .
+
+## All four images
+images:
+	$(MAKE) image ENGINE=chrome && $(MAKE) image ENGINE=lightpanda
+	$(MAKE) image-slim ENGINE=chrome && $(MAKE) image-slim ENGINE=lightpanda
 
 ## Run the server with compose (http://localhost:3000)
 up:

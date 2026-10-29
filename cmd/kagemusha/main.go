@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -34,6 +35,14 @@ func run() int {
 	if err != nil {
 		log.Error("config", "err", err)
 		return 2
+	}
+	// `kagemusha healthcheck` probes the running server (container health checks without a shell)
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		if err := server.Probe(context.Background(), cfg.ListenHost, cfg.Port); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
 	}
 	spec, ok := render.Specs[string(cfg.Engine)]
 	if !ok {

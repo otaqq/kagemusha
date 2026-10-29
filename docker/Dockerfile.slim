@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1
+# Images on debian:trixie-slim, with a shell for debugging. Production images: Dockerfile (distroless).
+# Build: docker build -f docker/Dockerfile.slim --build-arg ENGINE=chrome -t kagemusha:chrome-slim .
+#        docker build -f docker/Dockerfile.slim --build-arg ENGINE=lightpanda -t kagemusha:lightpanda-slim .
+# Test:  docker build -f docker/Dockerfile.slim --target test .   (all integration tests on both engines)
+ARG ENGINE=chrome
+# Keep in sync with docker/Dockerfile
+ARG LIGHTPANDA_VERSION=1.0.1
+ARG LIGHTPANDA_SHA256_AMD64=551747e35c51ba107b5d5277eca4b48e077b2a3b40f09a047bf6670448bc35fd
+ARG LIGHTPANDA_SHA256_ARM64=392ba370c12d9f045c36c1477db8b3e2985942c89532732ef8d1610057db7d5c
+
+FROM golang:1.27-trixie AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/kagemusha ./cmd/kagemusha
+
+FROM debian:trixie-slim AS lightpanda
+ARG LIGHTPANDA_VERSION
+ARG LIGHTPANDA_SHA256_AMD64
+ARG LIGHTPANDA_SHA256_ARM64
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+ && case "${TARGETARCH:-amd64}" in \
+      amd64) arch=x86_64; sum="$LIGHTPANDA_SHA256_AMD64" ;; \
+      arm64) arch=aarch64; sum="$LIGHTPANDA_SHA256_ARM64" ;; \
+      *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSLo /lightpanda "https://github.com/lightpanda-io/browser/releases/download/${LIGHTPANDA_VERSION}/lightpanda-${arch}-linux" \
+ && echo "${sum}  /lightpanda" | sha256sum -c - \
+ && chmod +x /lightpanda
+
+# Development and CI: Go plus both engines. `make itest` mounts the source into this image
+FROM golang:1.27-trixie AS testbase
+RUN apt-get update && apt-get install -y --no-install-recommends chromium && rm -rf /var/lib/apt/lists/*
+COPY --from=lightpanda /lightpanda /usr/bin/lightpanda
+ENV KAGEMUSHA_ENGINE_PATH=/usr/bin/chromium \
+    KAGEMUSHA_LIGHTPANDA_PATH=/usr/bin/lightpanda
+WORKDIR /src
+
+FROM testbase AS test
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go vet ./... && go vet -tags integration ./... && go test -tags integration -count=1 ./...
+
+FROM debian:trixie-slim AS runtime-chrome
+RUN apt-get update && apt-get install -y --no-install-recommends chromium ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+ENV KAGEMUSHA_ENGINE=chrome \
+    KAGEMUSHA_ENGINE_PATH=/usr/bin/chromium
+
+FROM debian:trixie-slim AS runtime-lightpanda
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=lightpanda /lightpanda /usr/bin/lightpanda
+ENV KAGEMUSHA_ENGINE=lightpanda \
+    KAGEMUSHA_ENGINE_PATH=/usr/bin/lightpanda
+
+FROM runtime-${ENGINE} AS runtime
+RUN useradd -u 10001 -m -s /usr/sbin/nologin kagemusha
+COPY --from=build /out/kagemusha /usr/local/bin/kagemusha
+USER kagemusha
+EXPOSE 3000
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 CMD ["/usr/local/bin/kagemusha", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/kagemusha"]

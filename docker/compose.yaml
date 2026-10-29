@@ -1,9 +1,9 @@
-# Run locally: docker compose -f docker/compose.yaml up --build
+# Run locally: docker compose -f docker/compose.yaml up --build (slim image: it has a shell for poking around)
 services:
   kagemusha:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.slim
       target: runtime
       args:
         ENGINE: chrome
@@ -16,7 +16,7 @@ services:
     # Chromium uses /dev/shm heavily. --disable-dev-shm-usage is set, but leave headroom anyway
     shm_size: 512m
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
+      test: ["CMD", "/usr/local/bin/kagemusha", "healthcheck"]
       interval: 10s
       timeout: 3s
       retries: 3

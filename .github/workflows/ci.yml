@@ -25,7 +25,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: docker build -f docker/Dockerfile --target test .
-      - run: docker build -f docker/Dockerfile --target runtime --build-arg ENGINE=chrome -t kagemusha:chrome .
-      - run: docker build -f docker/Dockerfile --target test-lightpanda .
-      - run: docker build -f docker/Dockerfile --target runtime --build-arg ENGINE=lightpanda -t kagemusha:lightpanda .
+      # Both engines with a full toolchain, then each production image testing itself
+      - run: docker build -f docker/Dockerfile.slim --target test .
+      - run: docker build -f docker/Dockerfile --target test --build-arg ENGINE=chrome .
+      - run: docker build -f docker/Dockerfile --target test --build-arg ENGINE=lightpanda .
+      - run: docker build -f docker/Dockerfile --build-arg ENGINE=chrome -t kagemusha:chrome .
+      - run: docker build -f docker/Dockerfile --build-arg ENGINE=lightpanda -t kagemusha:lightpanda .
+      - run: docker build -f docker/Dockerfile.slim --build-arg ENGINE=chrome -t kagemusha:chrome-slim .
+      - run: docker build -f docker/Dockerfile.slim --build-arg ENGINE=lightpanda -t kagemusha:lightpanda-slim .
