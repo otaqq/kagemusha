@@ -65,6 +65,7 @@ Every wait has a deadline. A dead browser is a failed render, never a dead proce
 | `GET /render?url=<absolute URL>` | Render and return HTML |
 | `GET /https://host/path` | prerender-compatible form of the above |
 | `GET /healthz` | `200` when the browser answers CDP, `503` otherwise |
+| `GET /metrics` | Prometheus metrics (see below; `KAGEMUSHA_METRICS=off` removes it) |
 
 Response headers: `Cache-Control` (per contract above), `X-Kagemusha-Trigger: ready|idle|timeout|redirect`, `Location` on a cross-host redirect, and with the in-process cache on, `X-Kagemusha-Cache: hit|miss` plus `Age` on hits.
 
@@ -103,6 +104,23 @@ All settings are environment variables with safe defaults.
 | `KAGEMUSHA_FORWARD_HEADERS_HOSTS` | – | Extra hosts that also receive forwarded headers (the target's own origin always does) |
 | `KAGEMUSHA_RESPONSE_HEADERS` | – | Newline-separated `Name: value` lines added to every render response, e.g. `X-Robots-Tag: noindex` |
 | `KAGEMUSHA_USER_AGENT` | browser UA + ` kagemusha` | User agent the browser sends |
+| `KAGEMUSHA_METRICS` | `on` | Serve `GET /metrics` |
+
+## Metrics
+
+`GET /metrics` serves the Prometheus text format and, like `/healthz`, never takes a render slot. No URL appears in any label.
+
+| Metric | Use |
+|---|---|
+| `kagemusha_requests_total{outcome}` | What happened to each request: `rendered`, `cache_hit`, `queue_timeout`, `render_failed`, `target_not_allowed`, `target_lookup_failed`, `denied_path`, `invalid_url` |
+| `kagemusha_renders_total{code,trigger}` | Actual renders; compare with `outcome="rendered"` to see how much single-flight saves |
+| `kagemusha_render_duration_seconds` | Render duration histogram |
+| `kagemusha_queue_running`, `kagemusha_queue_waiting`, `kagemusha_max_concurrent` | Scale out on `waiting` (or `running / max_concurrent`) rather than CPU |
+| `kagemusha_browser_restarts_total{reason}`, `kagemusha_browser_relaunch_failures_total` | `planned`, `watchdog`, `requested`; a rising `watchdog` means hangs |
+| `kagemusha_worker_renders_total`, `process_start_time_seconds` | Progress toward the worker recycle limits |
+| `kagemusha_cache_entries` | In-process cache size (when enabled) |
+
+Worker exit reasons are not metrics (the process is gone); they are logged and visible as the exit code.
 
 ## Security
 
@@ -185,7 +203,7 @@ testdata/spa/         tiny SPAs used by integration tests
 
 ## Roadmap
 
-- [ ] `/metrics` (Prometheus): renders, durations, queue depth, browser restarts, exit reasons
+- [x] `/metrics` (Prometheus)
 - [x] In-process LRU cache
 - [ ] Stale-while-revalidate for the in-process cache
 - [ ] Lightpanda launcher + engine comparison test

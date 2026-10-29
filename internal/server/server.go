@@ -18,6 +18,7 @@ import (
 
 	"github.com/otaqq/kagemusha/internal/cache"
 	"github.com/otaqq/kagemusha/internal/flow"
+	"github.com/otaqq/kagemusha/internal/metrics"
 	"github.com/otaqq/kagemusha/internal/netguard"
 	"github.com/otaqq/kagemusha/internal/render"
 )
@@ -49,6 +50,8 @@ type Options struct {
 	StripQueryParams []string
 	// Cache holds recent 200 renders under the single-flight key (nil disables it).
 	Cache *cache.LRU[render.Result]
+	// Metrics enables GET /metrics and request/render accounting (nil disables both).
+	Metrics *metrics.Metrics
 }
 
 // New builds the http.Handler.
@@ -60,6 +63,9 @@ func New(r Renderer, gate *flow.Gate, opt Options, log *slog.Logger) http.Handle
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /render", s.render)
+	if opt.Metrics != nil {
+		mux.HandleFunc("GET /metrics", s.metrics)
+	}
 	// ServeMux path cleaning collapses "//" in the prerender-compatible path (/https://host/path),
 	// so route it before the mux
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -110,6 +116,7 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 	noStore(w)
 	u, err := url.Parse(target)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		s.opt.Metrics.Request("invalid_url")
 		http.Error(w, "invalid url", http.StatusBadRequest)
 		return
 	}
@@ -118,8 +125,10 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 		if err := s.opt.Guard.CheckTarget(req.Context(), u); err != nil {
 			s.log.Warn("target rejected", "url", u.String(), "err", err)
 			if errors.Is(err, netguard.ErrNotAllowed) {
+				s.opt.Metrics.Request("target_not_allowed")
 				http.Error(w, "target not allowed", http.StatusForbidden)
 			} else {
+				s.opt.Metrics.Request("target_lookup_failed")
 				http.Error(w, "target lookup failed", http.StatusBadGateway)
 			}
 			return
@@ -127,6 +136,7 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 	}
 	for _, p := range s.opt.DenyPaths {
 		if strings.HasPrefix(u.Path, p) {
+			s.opt.Metrics.Request("denied_path")
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -141,6 +151,7 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 			w.Header().Set("X-Kagemusha-Cache", "hit")
 			w.Header().Set("Age", strconv.Itoa(int(age.Seconds())))
 			s.log.Info("render", "url", rreq.URL, "status", res.StatusCode, "trigger", res.Trigger, "cache", "hit")
+			s.opt.Metrics.Request("cache_hit")
 			writeResult(w, res, s.opt.CacheControl)
 			return
 		}
@@ -153,6 +164,9 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 	// Run the render with its own ctx so a primary disconnect does not cancel it
 	v, err := s.gate.Do(waitCtx, context.Background(), key, func(ctx context.Context) (any, error) {
 		res, err := s.r.Render(ctx, rreq)
+		if err == nil {
+			s.opt.Metrics.Render(statusOf(res), string(res.Trigger), res.Duration)
+		}
 		if err == nil && s.opt.Cache != nil && (res.StatusCode == 0 || res.StatusCode == http.StatusOK) {
 			s.opt.Cache.Set(key, res)
 		}
@@ -161,16 +175,19 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 	if err != nil {
 		if errors.Is(err, flow.ErrQueueTimeout) {
 			s.log.Warn("render queue timeout", "url", rreq.URL, "wait_ms", time.Since(start).Milliseconds())
+			s.opt.Metrics.Request("queue_timeout")
 			http.Error(w, "busy", http.StatusServiceUnavailable)
 			return
 		}
 		s.log.Error("render failed", "url", rreq.URL, "err", err)
+		s.opt.Metrics.Request("render_failed")
 		http.Error(w, "render failed", http.StatusBadGateway)
 		return
 	}
 	res := v.(render.Result)
 	s.log.Info("render", "url", rreq.URL, "status", res.StatusCode, "trigger", res.Trigger,
 		"duration_ms", res.Duration.Milliseconds(), "total_ms", time.Since(start).Milliseconds())
+	s.opt.Metrics.Request("rendered")
 	writeResult(w, res, s.opt.CacheControl)
 }
 
@@ -241,11 +258,22 @@ func flightKey(r render.Request) string {
 }
 
 // writeResult applies the response contract: only 200 gets cacheable headers; anything else is no-store.
-func writeResult(w http.ResponseWriter, res render.Result, cacheControl string) {
-	status := res.StatusCode
-	if status == 0 {
-		status = http.StatusOK
+// metrics serves the Prometheus text format without taking a flow-control slot.
+func (s *server) metrics(w http.ResponseWriter, _ *http.Request) {
+	noStore(w)
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	_, _ = s.opt.Metrics.WriteTo(w)
+}
+
+func statusOf(res render.Result) int {
+	if res.StatusCode == 0 {
+		return http.StatusOK
 	}
+	return res.StatusCode
+}
+
+func writeResult(w http.ResponseWriter, res render.Result, cacheControl string) {
+	status := statusOf(res)
 	if status == http.StatusOK && cacheControl != "" {
 		w.Header().Set("Cache-Control", cacheControl)
 	} else {

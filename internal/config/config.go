@@ -52,6 +52,7 @@ type Config struct {
 	BlockResourceTypes   []string
 	RedirectCrossHost    bool
 	StripScripts         bool
+	Metrics              bool
 }
 
 // Default returns the default settings.
@@ -70,6 +71,7 @@ func Default() Config {
 		BrowserRestartPeriod: 10 * time.Minute,
 		WatchdogTimeout:      10 * time.Second,
 		CacheMaxEntries:      100,
+		Metrics:              true,
 	}
 }
 
@@ -163,6 +165,9 @@ func Load(getenv Getenv) (Config, error) {
 		return c, err
 	}
 	if c.StripScripts, err = boolEnv(getenv, "KAGEMUSHA_STRIP_SCRIPTS", c.StripScripts); err != nil {
+		return c, err
+	}
+	if c.Metrics, err = boolEnv(getenv, "KAGEMUSHA_METRICS", c.Metrics); err != nil {
 		return c, err
 	}
 	switch v := strings.ToLower(getenv("KAGEMUSHA_CROSS_HOST_NAVIGATION")); v {

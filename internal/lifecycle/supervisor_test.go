@@ -83,8 +83,8 @@ func TestSupervisor_WatchdogReplacesUnhealthyEngine(t *testing.T) {
 	for s.Restarts() == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if s.Restarts() != 1 || atomic.LoadInt32(created) != 2 {
-		t.Fatalf("restarts=%d created=%d", s.Restarts(), *created)
+	if s.Restarts() != 1 || atomic.LoadInt32(created) != 2 || s.RestartsByReason()[RestartWatchdog] != 1 {
+		t.Fatalf("restarts=%d created=%d by reason=%v", s.Restarts(), *created, s.RestartsByReason())
 	}
 	e1.mu.Lock()
 	closed := e1.closed
@@ -118,6 +118,10 @@ func TestSupervisor_PlannedRestartAndRequestRestart(t *testing.T) {
 	if s.Restarts() < before+1 {
 		t.Fatal("requested restart did not happen")
 	}
+	by := s.RestartsByReason()
+	if by[RestartPlanned] < 1 || by[RestartRequested] < 1 {
+		t.Fatalf("restarts by reason: %v", by)
+	}
 }
 
 func TestSupervisor_KeepsOldEngineWhenRestartFails(t *testing.T) {
@@ -130,9 +134,9 @@ func TestSupervisor_KeepsOldEngineWhenRestartFails(t *testing.T) {
 	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	s.doRestart(ctx)
-	if s.Restarts() != 0 || !s.Healthy(ctx) {
-		t.Fatal("old engine must remain")
+	s.doRestart(ctx, RestartRequested)
+	if s.Restarts() != 0 || !s.Healthy(ctx) || s.RelaunchFailures() != 1 {
+		t.Fatalf("old engine must remain, failure counted: restarts=%d failures=%d", s.Restarts(), s.RelaunchFailures())
 	}
 }
 

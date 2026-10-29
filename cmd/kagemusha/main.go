@@ -17,6 +17,7 @@ import (
 	"github.com/otaqq/kagemusha/internal/config"
 	"github.com/otaqq/kagemusha/internal/flow"
 	"github.com/otaqq/kagemusha/internal/lifecycle"
+	"github.com/otaqq/kagemusha/internal/metrics"
 	"github.com/otaqq/kagemusha/internal/netguard"
 	"github.com/otaqq/kagemusha/internal/render"
 	"github.com/otaqq/kagemusha/internal/render/chrome"
@@ -71,12 +72,30 @@ func run() int {
 		return 1
 	}
 
+	gate := flow.New(cfg.MaxConcurrent)
+	var m *metrics.Metrics
+	if cfg.Metrics {
+		m = metrics.New()
+		m.Gauge("kagemusha_queue_running", "Renders holding a concurrency slot.", func() float64 { r, _ := gate.Stats(); return float64(r) })
+		m.Gauge("kagemusha_queue_waiting", "Distinct URLs waiting for a slot.", func() float64 { _, w := gate.Stats(); return float64(w) })
+		m.Gauge("kagemusha_max_concurrent", "Configured concurrency slots.", func() float64 { return float64(cfg.MaxConcurrent) })
+		m.LabeledCounter("kagemusha_browser_restarts_total", "Successful browser restarts by reason.", "reason", func() map[string]float64 {
+			out := map[string]float64{lifecycle.RestartPlanned: 0, lifecycle.RestartWatchdog: 0, lifecycle.RestartRequested: 0}
+			for k, v := range sup.RestartsByReason() {
+				out[k] = float64(v)
+			}
+			return out
+		})
+		m.Counter("kagemusha_browser_relaunch_failures_total", "Restarts that failed to launch a new browser.", func() float64 { return float64(sup.RelaunchFailures()) })
+		m.Counter("kagemusha_worker_renders_total", "Renders by this worker (counts toward WORKER_MAX_RENDERS).", func() float64 { return float64(policy.Renders()) })
+	}
 	guard := netguard.New(cfg.TargetHosts, cfg.AllowPrivateTargets, nil)
 	var pageCache *cache.LRU[render.Result]
 	if cfg.CacheTTL > 0 {
 		pageCache = cache.New[render.Result](cfg.CacheTTL, cfg.CacheMaxEntries, nil)
+		m.Gauge("kagemusha_cache_entries", "Entries in the in-process cache.", func() float64 { return float64(pageCache.Len()) })
 	}
-	h := server.New(sup, flow.New(cfg.MaxConcurrent), server.Options{
+	h := server.New(sup, gate, server.Options{
 		CacheControl:     cfg.CacheControl,
 		DenyPaths:        cfg.DenyPaths,
 		QueueTimeout:     cfg.QueueTimeout,
@@ -85,6 +104,7 @@ func run() int {
 		ResponseHeaders:  cfg.ResponseHeaders,
 		StripQueryParams: cfg.StripQueryParams,
 		Cache:            pageCache,
+		Metrics:          m,
 		Request: render.Request{
 			ReadyFlag: cfg.ReadyFlag, IdleQuiet: cfg.IdleQuiet, PageTimeout: cfg.PageTimeout,
 			BlockDomains: cfg.BlockDomains, AllowDomains: cfg.AllowDomains, BlockResourceTypes: cfg.BlockResourceTypes,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"time"
 
@@ -37,9 +38,17 @@ type Supervisor struct {
 	restart chan struct{}
 	metrics struct {
 		sync.Mutex
-		restarts int
+		restarts map[string]int
+		failures int
 	}
 }
+
+// Restart reasons (metrics labels).
+const (
+	RestartPlanned   = "planned"
+	RestartWatchdog  = "watchdog"
+	RestartRequested = "requested"
+)
 
 // NewSupervisor creates a Supervisor.
 func NewSupervisor(f Factory, opt Options) *Supervisor {
@@ -52,7 +61,9 @@ func NewSupervisor(f Factory, opt Options) *Supervisor {
 	if opt.Log == nil {
 		opt.Log = slog.Default()
 	}
-	return &Supervisor{factory: f, opt: opt, restart: make(chan struct{}, 1)}
+	s := &Supervisor{factory: f, opt: opt, restart: make(chan struct{}, 1)}
+	s.metrics.restarts = map[string]int{}
+	return s
 }
 
 // Start launches the first engine and runs the supervisor loop until ctx ends.
@@ -99,9 +110,9 @@ func (s *Supervisor) loop(ctx context.Context) {
 			return
 		case <-planned:
 			s.opt.Log.Info("planned engine restart")
-			s.doRestart(ctx)
+			s.doRestart(ctx, RestartPlanned)
 		case <-s.restart:
-			s.doRestart(ctx)
+			s.doRestart(ctx, RestartRequested)
 		case <-check.C:
 			if s.opt.Policy != nil {
 				if r := s.opt.Policy.Check(); r != ExitNone {
@@ -118,7 +129,7 @@ func (s *Supervisor) loop(ctx context.Context) {
 			if time.Since(unhealthySince) >= s.opt.WatchdogTimeout {
 				s.opt.Log.Warn("watchdog: engine unhealthy, restarting", "unhealthy_for", time.Since(unhealthySince))
 				unhealthySince = time.Time{}
-				s.doRestart(ctx)
+				s.doRestart(ctx, RestartWatchdog)
 			}
 		}
 	}
@@ -126,10 +137,13 @@ func (s *Supervisor) loop(ctx context.Context) {
 
 // doRestart launches the new engine first, swaps it in, then closes the old one (minimizing waits during the swap).
 // The swap takes the write lock, so in-flight renders (holding read locks) finish first.
-func (s *Supervisor) doRestart(ctx context.Context) {
+func (s *Supervisor) doRestart(ctx context.Context, reason string) {
 	neweng, err := s.launch(ctx)
 	if err != nil {
-		s.opt.Log.Error("engine relaunch failed", "err", err)
+		s.opt.Log.Error("engine relaunch failed", "err", err, "reason", reason)
+		s.metrics.Lock()
+		s.metrics.failures++
+		s.metrics.Unlock()
 		return
 	}
 	s.mu.Lock()
@@ -137,7 +151,7 @@ func (s *Supervisor) doRestart(ctx context.Context) {
 	s.eng = neweng
 	s.mu.Unlock()
 	s.metrics.Lock()
-	s.metrics.restarts++
+	s.metrics.restarts[reason]++
 	s.metrics.Unlock()
 	if old != nil {
 		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -179,11 +193,29 @@ func (s *Supervisor) Healthy(ctx context.Context) bool {
 	return eng != nil && eng.Healthy(ctx)
 }
 
-// Restarts returns the number of restarts (for metrics).
+// Restarts returns the number of successful restarts (for metrics).
 func (s *Supervisor) Restarts() int {
 	s.metrics.Lock()
 	defer s.metrics.Unlock()
-	return s.metrics.restarts
+	n := 0
+	for _, v := range s.metrics.restarts {
+		n += v
+	}
+	return n
+}
+
+// RestartsByReason returns successful restarts per reason (for metrics).
+func (s *Supervisor) RestartsByReason() map[string]int {
+	s.metrics.Lock()
+	defer s.metrics.Unlock()
+	return maps.Clone(s.metrics.restarts)
+}
+
+// RelaunchFailures returns how many restarts failed to launch a new engine (the old one kept serving).
+func (s *Supervisor) RelaunchFailures() int {
+	s.metrics.Lock()
+	defer s.metrics.Unlock()
+	return s.metrics.failures
 }
 
 func (s *Supervisor) exit(r ExitReason) {

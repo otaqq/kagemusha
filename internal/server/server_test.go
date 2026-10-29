@@ -14,6 +14,7 @@ import (
 
 	"github.com/otaqq/kagemusha/internal/cache"
 	"github.com/otaqq/kagemusha/internal/flow"
+	"github.com/otaqq/kagemusha/internal/metrics"
 	"github.com/otaqq/kagemusha/internal/netguard"
 	"github.com/otaqq/kagemusha/internal/render"
 )
@@ -352,5 +353,70 @@ func TestRender_RedirectResultIs302WithLocationAndNeverCached(t *testing.T) {
 	}
 	if f.calls != 2 {
 		t.Fatalf("redirects must not be cached: calls=%d", f.calls)
+	}
+}
+
+func TestMetrics_OutcomesAndActualRenders(t *testing.T) {
+	m := metrics.New()
+	c := cache.New[render.Result](time.Minute, 10, nil)
+	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "x", StatusCode: 200, Trigger: render.TriggerReady, Duration: 2 * time.Second}}
+	h := newHandler(f, Options{Metrics: m, Cache: c, DenyPaths: []string{"/api"}})
+	get(h, "/render?url=https://shop.example/")    // rendered
+	get(h, "/render?url=https://shop.example/")    // cache_hit
+	get(h, "/render?url=ftp://x")                  // invalid_url
+	get(h, "/render?url=https://shop.example/api") // denied_path
+	for _, g := range []TargetGuard{fakeGuard{netguard.ErrNotAllowed}, fakeGuard{errors.New("dns")}} {
+		get(newHandler(f, Options{Metrics: m, Guard: g}), "/render?url=https://x.example/")
+	}
+	get(newHandler(&fakeRenderer{healthy: true, err: errors.New("boom")}, Options{Metrics: m}), "/render?url=https://shop.example/")
+
+	rec := get(h, "/metrics")
+	if rec.Code != 200 || rec.Header().Get("Content-Type") != "text/plain; version=0.0.4; charset=utf-8" || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("%d %v", rec.Code, rec.Header())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`kagemusha_requests_total{outcome="cache_hit"} 1`,
+		`kagemusha_requests_total{outcome="denied_path"} 1`,
+		`kagemusha_requests_total{outcome="invalid_url"} 1`,
+		`kagemusha_requests_total{outcome="render_failed"} 1`,
+		`kagemusha_requests_total{outcome="rendered"} 1`,
+		`kagemusha_requests_total{outcome="target_lookup_failed"} 1`,
+		`kagemusha_requests_total{outcome="target_not_allowed"} 1`,
+		`kagemusha_renders_total{code="200",trigger="ready"} 1`,
+		`kagemusha_render_duration_seconds_count 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+func TestMetrics_SharedRenderCountsOnceQueueTimeoutCounts(t *testing.T) {
+	m := metrics.New()
+	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "x", StatusCode: 200, Trigger: render.TriggerIdle}, delay: 100 * time.Millisecond}
+	h := New(f, flow.New(1), Options{Metrics: m, QueueTimeout: 150 * time.Millisecond}, nil)
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Go(func() { get(h, "/render?url=https://shop.example/a") })
+	}
+	time.Sleep(10 * time.Millisecond)
+	wg.Go(func() { get(h, "/render?url=https://shop.example/b") }) // 100ms behind a + 100ms render > 150ms
+	wg.Wait()
+	body := get(h, "/metrics").Body.String()
+	for _, want := range []string{
+		`kagemusha_requests_total{outcome="queue_timeout"} 1`,
+		`kagemusha_requests_total{outcome="rendered"} 3`,
+		`kagemusha_renders_total{code="200",trigger="idle"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+func TestMetrics_EndpointAbsentWithoutMetrics(t *testing.T) {
+	if rec := get(newHandler(&fakeRenderer{healthy: true}, Options{}), "/metrics"); rec.Code != 404 {
+		t.Fatalf("want 404, got %d", rec.Code)
 	}
 }

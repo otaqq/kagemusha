@@ -213,3 +213,15 @@ func TestLoad_StripScripts(t *testing.T) {
 		t.Fatal("invalid boolean must fail")
 	}
 }
+
+func TestLoad_Metrics(t *testing.T) {
+	if c, err := Load(env(nil)); err != nil || !c.Metrics {
+		t.Fatalf("metrics must default to on: %v %+v", err, c)
+	}
+	if c, err := Load(env(map[string]string{"KAGEMUSHA_METRICS": "off"})); err != nil || c.Metrics {
+		t.Fatalf("got %v %+v", err, c)
+	}
+	if _, err := Load(env(map[string]string{"KAGEMUSHA_METRICS": "x"})); err == nil {
+		t.Fatal("invalid boolean must fail")
+	}
+}

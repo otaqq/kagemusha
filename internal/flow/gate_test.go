@@ -206,3 +206,23 @@ func TestDo_LeaveRacingSlotAcquisitionNeverLeaksSlots(t *testing.T) {
 		t.Fatalf("slot leaked: v=%v err=%v used=%d", v, err, len(g.slots))
 	}
 }
+
+func TestStats_RunningAndWaiting(t *testing.T) {
+	g := New(1)
+	release := make(chan struct{})
+	slow := func(ctx context.Context) (any, error) { <-release; return nil, nil }
+	go g.Do(context.Background(), context.Background(), "a", slow) //nolint:errcheck
+	time.Sleep(10 * time.Millisecond)
+	go g.Do(context.Background(), context.Background(), "b", slow) //nolint:errcheck
+	go g.Do(context.Background(), context.Background(), "c", slow) //nolint:errcheck
+	go g.Do(context.Background(), context.Background(), "c", slow) //nolint:errcheck
+	time.Sleep(10 * time.Millisecond)
+	if running, waiting := g.Stats(); running != 1 || waiting != 2 {
+		t.Fatalf("want 1 running / 2 waiting keys, got %d / %d", running, waiting)
+	}
+	close(release)
+	time.Sleep(20 * time.Millisecond)
+	if running, waiting := g.Stats(); running != 0 || waiting != 0 {
+		t.Fatalf("drained: %d / %d", running, waiting)
+	}
+}

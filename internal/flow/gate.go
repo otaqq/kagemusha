@@ -112,6 +112,18 @@ func (g *Gate) leave(key string, c *call) {
 	}
 }
 
+// Stats returns the number of runs holding a slot and the number of keys waiting for one (for metrics).
+func (g *Gate) Stats() (running, waiting int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, c := range g.calls {
+		if !c.started {
+			waiting++
+		}
+	}
+	return len(g.slots), waiting
+}
+
 // InFlight returns the number of keys running or queued (for metrics).
 func (g *Gate) InFlight() int {
 	g.mu.Lock()
