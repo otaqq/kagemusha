@@ -36,6 +36,7 @@ jobs:
 
   # Native arm64: each production image tests itself (libraries live in other paths than on amd64)
   integration-arm64:
+    if: github.server_url == 'https://github.com'
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7

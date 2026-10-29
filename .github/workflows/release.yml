@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   test:
+    if: github.server_url == 'https://github.com'
     strategy:
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
@@ -21,6 +22,7 @@ jobs:
       - run: docker build -f docker/Dockerfile --target test --build-arg ENGINE=lightpanda .
 
   publish:
+    if: github.server_url == 'https://github.com'
     needs: test
     runs-on: ubuntu-latest
     permissions:
