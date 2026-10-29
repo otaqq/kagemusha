@@ -78,3 +78,63 @@ func TestLoad_NilGetenvUsesOsGetenv(t *testing.T) {
 		t.Fatalf("got %v %+v", err, c)
 	}
 }
+
+func TestLoad_SecurityDefaults(t *testing.T) {
+	c, err := Load(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ListenHost != "" || c.TargetHosts != nil || c.AllowPrivateTargets || c.ForwardHeaders != nil ||
+		c.ForwardHeadersHosts != nil || c.ResponseHeaders != nil || c.UserAgent != "" {
+		t.Fatalf("security settings must default to off / deny-private: %+v", c)
+	}
+}
+
+func TestLoad_SecuritySettings(t *testing.T) {
+	c, err := Load(env(map[string]string{
+		"KAGEMUSHA_LISTEN_HOST":           "127.0.0.1",
+		"KAGEMUSHA_TARGET_HOSTS":          "shop.example, stg.example",
+		"KAGEMUSHA_ALLOW_PRIVATE_TARGETS": "on",
+		"KAGEMUSHA_FORWARD_HEADERS":       "authorization, x-api-key",
+		"KAGEMUSHA_FORWARD_HEADERS_HOSTS": "api.example",
+		"KAGEMUSHA_RESPONSE_HEADERS":      "X-Robots-Tag: noindex, nofollow\n\n  X-Env: stg  \n",
+		"KAGEMUSHA_USER_AGENT":            "MyRenderer/1.0",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ListenHost != "127.0.0.1" || len(c.TargetHosts) != 2 || !c.AllowPrivateTargets ||
+		len(c.ForwardHeaders) != 2 || c.ForwardHeaders[0] != "Authorization" || c.ForwardHeaders[1] != "X-Api-Key" ||
+		len(c.ForwardHeadersHosts) != 1 || c.UserAgent != "MyRenderer/1.0" {
+		t.Fatalf("unexpected: %+v", c)
+	}
+	if c.ResponseHeaders.Get("X-Robots-Tag") != "noindex, nofollow" || c.ResponseHeaders.Get("X-Env") != "stg" || len(c.ResponseHeaders) != 2 {
+		t.Fatalf("response headers: %v", c.ResponseHeaders)
+	}
+}
+
+func TestLoad_InvalidSecuritySettingsFail(t *testing.T) {
+	cases := []map[string]string{
+		{"KAGEMUSHA_ALLOW_PRIVATE_TARGETS": "maybe"},
+		{"KAGEMUSHA_FORWARD_HEADERS": "Host"},
+		{"KAGEMUSHA_FORWARD_HEADERS": "proxy-authorization"},
+		{"KAGEMUSHA_FORWARD_HEADERS": "Bad Header"},
+		{"KAGEMUSHA_RESPONSE_HEADERS": "no-colon"},
+		{"KAGEMUSHA_RESPONSE_HEADERS": "X-Empty:"},
+		{"KAGEMUSHA_RESPONSE_HEADERS": "Bad Name: x"},
+		{"KAGEMUSHA_RESPONSE_HEADERS": "cache-control: public"},
+		{"KAGEMUSHA_RESPONSE_HEADERS": "X-Kagemusha-Trigger: ready"},
+	}
+	for _, m := range cases {
+		if _, err := Load(env(m)); err == nil {
+			t.Errorf("expected error for %v", m)
+		}
+	}
+}
+
+func TestLoad_BlankResponseHeadersIsNil(t *testing.T) {
+	c, err := Load(env(map[string]string{"KAGEMUSHA_RESPONSE_HEADERS": " \n "}))
+	if err != nil || c.ResponseHeaders != nil {
+		t.Fatalf("got %v %v", err, c.ResponseHeaders)
+	}
+}

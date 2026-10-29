@@ -4,17 +4,19 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/otaqq/kagemusha/internal/config"
 	"github.com/otaqq/kagemusha/internal/flow"
 	"github.com/otaqq/kagemusha/internal/lifecycle"
+	"github.com/otaqq/kagemusha/internal/netguard"
 	"github.com/otaqq/kagemusha/internal/render"
 	"github.com/otaqq/kagemusha/internal/render/chrome"
 	"github.com/otaqq/kagemusha/internal/server"
@@ -66,18 +68,24 @@ func run() int {
 		return 1
 	}
 
+	guard := netguard.New(cfg.TargetHosts, cfg.AllowPrivateTargets, nil)
 	h := server.New(sup, flow.New(cfg.MaxConcurrent), server.Options{
-		CacheControl: cfg.CacheControl,
-		DenyPaths:    cfg.DenyPaths,
-		QueueTimeout: cfg.QueueTimeout,
+		CacheControl:    cfg.CacheControl,
+		DenyPaths:       cfg.DenyPaths,
+		QueueTimeout:    cfg.QueueTimeout,
+		Guard:           guard,
+		ForwardHeaders:  cfg.ForwardHeaders,
+		ResponseHeaders: cfg.ResponseHeaders,
 		Request: render.Request{
 			ReadyFlag: cfg.ReadyFlag, IdleQuiet: cfg.IdleQuiet, PageTimeout: cfg.PageTimeout,
 			BlockDomains: cfg.BlockDomains, AllowDomains: cfg.AllowDomains,
+			Guard: guard, ForwardHosts: cfg.ForwardHeadersHosts, UserAgent: cfg.UserAgent,
 		},
 	}, log)
-	srv := &http.Server{Addr: fmt.Sprintf(":%d", cfg.Port), Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	addr := net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.Port))
+	srv := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
-		log.Info("kagemusha listening", "port", cfg.Port, "engine", cfg.Engine, "path", path)
+		log.Info("kagemusha listening", "addr", addr, "engine", cfg.Engine, "path", path)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("http server", "err", err)
 			exitCh <- lifecycle.ExitNone

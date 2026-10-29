@@ -47,3 +47,19 @@ func TestActivity_Idle(t *testing.T) {
 		t.Fatal("quiet window not elapsed")
 	}
 }
+
+func TestStatusCode_HTTPErrorWinsOverDeclaredStatus(t *testing.T) {
+	cases := []struct{ http, declared, want int }{
+		{0, 0, 200},     // status unknown, nothing declared
+		{200, 0, 200},   // plain success
+		{200, 404, 404}, // SPA declares not found on a 200 shell
+		{401, 0, 401},   // Basic auth wall must not become a cacheable 200
+		{500, 200, 500}, // the page cannot hide a server error
+		{0, 410, 410},   // status unknown, declared wins
+	}
+	for _, c := range cases {
+		if got := statusCode(c.http, c.declared); got != c.want {
+			t.Errorf("statusCode(%d, %d) = %d, want %d", c.http, c.declared, got, c.want)
+		}
+	}
+}

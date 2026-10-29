@@ -3,7 +3,10 @@ package config
 
 import (
 	"fmt"
+	"net/http"
+	"net/textproto"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +24,7 @@ const (
 type Config struct {
 	Engine               Engine
 	EnginePath           string
+	ListenHost           string
 	Port                 int
 	MaxConcurrent        int
 	QueueTimeout         time.Duration
@@ -35,6 +39,12 @@ type Config struct {
 	WorkerMaxAge         time.Duration
 	BrowserRestartPeriod time.Duration
 	WatchdogTimeout      time.Duration
+	TargetHosts          []string
+	AllowPrivateTargets  bool
+	ForwardHeaders       []string
+	ForwardHeadersHosts  []string
+	ResponseHeaders      http.Header
+	UserAgent            string
 }
 
 // Default returns the default settings.
@@ -74,6 +84,7 @@ func Load(getenv Getenv) (Config, error) {
 		}
 	}
 	c.EnginePath = getenv("KAGEMUSHA_ENGINE_PATH")
+	c.ListenHost = getenv("KAGEMUSHA_LISTEN_HOST")
 	if c.Port, err = intEnv(getenv, "KAGEMUSHA_PORT", c.Port); err != nil {
 		return c, err
 	}
@@ -113,7 +124,71 @@ func Load(getenv Getenv) (Config, error) {
 	if c.WatchdogTimeout, err = msEnv(getenv, "KAGEMUSHA_WATCHDOG_TIMEOUT_MS", c.WatchdogTimeout); err != nil {
 		return c, err
 	}
+	c.TargetHosts = listEnv(getenv, "KAGEMUSHA_TARGET_HOSTS")
+	if c.AllowPrivateTargets, err = boolEnv(getenv, "KAGEMUSHA_ALLOW_PRIVATE_TARGETS", c.AllowPrivateTargets); err != nil {
+		return c, err
+	}
+	if c.ForwardHeaders, err = forwardHeadersEnv(getenv, "KAGEMUSHA_FORWARD_HEADERS"); err != nil {
+		return c, err
+	}
+	c.ForwardHeadersHosts = listEnv(getenv, "KAGEMUSHA_FORWARD_HEADERS_HOSTS")
+	if c.ResponseHeaders, err = responseHeadersEnv(getenv, "KAGEMUSHA_RESPONSE_HEADERS"); err != nil {
+		return c, err
+	}
+	c.UserAgent = getenv("KAGEMUSHA_USER_AGENT")
 	return c, nil
+}
+
+var tokenRE = regexp.MustCompile("^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$")
+
+// unforwardable are headers that describe the connection or the message itself, not the client.
+var unforwardable = map[string]bool{
+	"Host": true, "Connection": true, "Content-Length": true, "Transfer-Encoding": true, "Te": true,
+	"Trailer": true, "Upgrade": true, "Keep-Alive": true, "Proxy-Authorization": true, "Proxy-Connection": true,
+}
+
+func forwardHeadersEnv(getenv Getenv, key string) ([]string, error) {
+	var out []string
+	for _, n := range listEnv(getenv, key) {
+		if !tokenRE.MatchString(n) {
+			return nil, fmt.Errorf("%s: invalid header name %q", key, n)
+		}
+		n = textproto.CanonicalMIMEHeaderKey(n)
+		if unforwardable[n] {
+			return nil, fmt.Errorf("%s: %s cannot be forwarded", key, n)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// reserved are response headers owned by the response contract.
+var reserved = map[string]bool{
+	"Cache-Control": true, "Content-Type": true, "Content-Length": true, "Location": true, "X-Kagemusha-Trigger": true,
+}
+
+// responseHeadersEnv parses newline-separated "Name: value" lines (values may contain commas).
+func responseHeadersEnv(getenv Getenv, key string) (http.Header, error) {
+	v := getenv(key)
+	if strings.TrimSpace(v) == "" {
+		return nil, nil
+	}
+	h := http.Header{}
+	for _, line := range strings.Split(v, "\n") {
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(line, ":")
+		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
+		if !ok || !tokenRE.MatchString(name) || value == "" {
+			return nil, fmt.Errorf("%s: invalid header line %q (want \"Name: value\")", key, line)
+		}
+		if reserved[textproto.CanonicalMIMEHeaderKey(name)] {
+			return nil, fmt.Errorf("%s: %s is set by kagemusha and cannot be overridden", key, name)
+		}
+		h.Add(name, value)
+	}
+	return h, nil
 }
 
 func intEnv(getenv Getenv, key string, def int) (int, error) {

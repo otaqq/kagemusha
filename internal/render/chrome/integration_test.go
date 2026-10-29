@@ -4,11 +4,14 @@ package chrome
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +46,13 @@ func spaServer(t *testing.T) *httptest.Server {
 		time.Sleep(200 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"title":"rendered title"}`))
+	})
+	mux.HandleFunc("/status/{code}", func(w http.ResponseWriter, r *http.Request) {
+		var code int
+		_, _ = fmt.Sscan(r.PathValue("code"), &code)
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(code)
+		_, _ = fmt.Fprintf(w, `<html><body><div id="app">error page %d</div></body></html>`, code)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -98,5 +108,134 @@ func TestIntegration_TimeoutReturnsPartialResult(t *testing.T) {
 	}
 	if res.Trigger != render.TriggerTimeout || !strings.Contains(res.HTML, "never-ready") {
 		t.Fatalf("trigger=%s html=%s", res.Trigger, res.HTML)
+	}
+}
+
+func TestIntegration_HTTPErrorStatusOfTheDocumentIsReturned(t *testing.T) {
+	e := launch(t)
+	srv := spaServer(t)
+	for _, code := range []int{401, 404, 500} {
+		res, err := e.Render(context.Background(), render.Request{URL: fmt.Sprintf("%s/status/%d", srv.URL, code), ReadyFlag: true, IdleQuiet: 300 * time.Millisecond, PageTimeout: 10 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.StatusCode != code || !strings.Contains(res.HTML, fmt.Sprintf("error page %d", code)) {
+			t.Fatalf("want %d, got status=%d html=%s", code, res.StatusCode, res.HTML)
+		}
+	}
+}
+
+// recorder captures the headers each request arrived with.
+type recorder struct {
+	mu   sync.Mutex
+	seen map[string]http.Header // path → headers
+}
+
+func (r *recorder) record(req *http.Request) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen[req.URL.Path] = req.Header.Clone()
+}
+
+func (r *recorder) get(path string) http.Header {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.seen[path]
+}
+
+// basicAuthSite is a Basic-auth staging site whose page calls its own API and a third-party host.
+func basicAuthSite(t *testing.T) (site, third *httptest.Server, rec *recorder) {
+	t.Helper()
+	rec = &recorder{seen: map[string]http.Header{}}
+	third = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(r)
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		_, _ = w.Write([]byte("probe-ok"))
+	}))
+	t.Cleanup(third.Close)
+	// The page is on 127.0.0.1 and the third party on localhost: same machine, different origins
+	thirdURL := strings.Replace(third.URL, "127.0.0.1", "localhost", 1)
+	site = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(r)
+		if u, p, ok := r.BasicAuth(); !ok || u != "test" || p != "testpass" {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`<html><body>auth required</body></html>`))
+			return
+		}
+		if r.URL.Path == "/api/secret" {
+			_, _ = w.Write([]byte("secret-content"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><body><div id="app">loading</div><script>
+Promise.all([
+  fetch('/api/secret').then(function (r) { return r.text(); }),
+  fetch('%s/probe').then(function (r) { return r.text(); }).catch(function () { return 'probe-blocked'; })
+]).then(function (v) { document.getElementById('app').textContent = v.join('|'); window.prerenderReady = true; });
+</script></body></html>`, thirdURL)
+	}))
+	t.Cleanup(site.Close)
+	return site, third, rec
+}
+
+func TestIntegration_ForwardedBasicAuthReachesOnlyTheTargetOrigin(t *testing.T) {
+	e := launch(t)
+	site, _, rec := basicAuthSite(t)
+	auth := "Basic dGVzdDp0ZXN0cGFzcw==" // test:testpass
+	res, err := e.Render(context.Background(), render.Request{URL: site.URL + "/", ReadyFlag: true, IdleQuiet: time.Second, PageTimeout: 15 * time.Second,
+		Headers: map[string]string{"Authorization": auth}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 200 || !strings.Contains(res.HTML, "secret-content|probe-ok") {
+		t.Fatalf("status=%d html=%s", res.StatusCode, res.HTML)
+	}
+	if rec.get("/api/secret").Get("Authorization") != auth {
+		t.Fatal("same-origin sub-request must carry the forwarded header")
+	}
+	probe := rec.get("/probe")
+	if probe == nil || probe.Get("Authorization") != "" {
+		t.Fatalf("third-party host must not receive the forwarded header: %v", probe)
+	}
+	if ua := probe.Get("User-Agent"); !strings.HasSuffix(ua, " kagemusha") {
+		t.Fatalf("user agent must carry the kagemusha marker: %q", ua)
+	}
+}
+
+func TestIntegration_WithoutCredentialsTheAuthWallIsReturnedAs401(t *testing.T) {
+	e := launch(t)
+	site, _, _ := basicAuthSite(t)
+	res, err := e.Render(context.Background(), render.Request{URL: site.URL + "/", ReadyFlag: true, IdleQuiet: 300 * time.Millisecond, PageTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 401 || strings.Contains(res.HTML, "secret-content") {
+		t.Fatalf("status=%d html=%s", res.StatusCode, res.HTML)
+	}
+}
+
+type denyHost string
+
+func (d denyHost) CheckHost(_ context.Context, host string) error {
+	if host == string(d) {
+		return errors.New("denied")
+	}
+	return nil
+}
+
+func TestIntegration_GuardBlocksSubRequestsAndUserAgentOverride(t *testing.T) {
+	e := launch(t)
+	site, _, rec := basicAuthSite(t)
+	res, err := e.Render(context.Background(), render.Request{URL: site.URL + "/", ReadyFlag: true, IdleQuiet: time.Second, PageTimeout: 15 * time.Second,
+		Headers: map[string]string{"Authorization": "Basic dGVzdDp0ZXN0cGFzcw=="}, Guard: denyHost("localhost"), UserAgent: "CustomRenderer/1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.HTML, "secret-content|probe-blocked") || rec.get("/probe") != nil {
+		t.Fatalf("guard-denied host must never be reached: html=%s", res.HTML)
+	}
+	if ua := rec.get("/").Get("User-Agent"); ua != "CustomRenderer/1.0" {
+		t.Fatalf("user agent override: %q", ua)
 	}
 }

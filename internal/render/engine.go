@@ -17,6 +17,11 @@ const (
 	TriggerTimeout Trigger = "timeout" // absolute limit reached (partial result)
 )
 
+// HostGuard validates every host the browser connects to (SSRF protection). Implemented by netguard.Guard.
+type HostGuard interface {
+	CheckHost(ctx context.Context, host string) error
+}
+
 // Request is the input of one render.
 type Request struct {
 	URL          string
@@ -25,10 +30,17 @@ type Request struct {
 	PageTimeout  time.Duration
 	BlockDomains []string
 	AllowDomains []string
+	// Guard blocks requests to disallowed hosts (nil disables the check).
+	Guard HostGuard
+	// Headers are added to requests for the target's origin and ForwardHosts (taken from the incoming request).
+	Headers      map[string]string
+	ForwardHosts []string
+	// UserAgent overrides the browser user agent. Empty means the browser default plus " kagemusha".
+	UserAgent string
 }
 
-// Result is the output of one render. StatusCode is the value the page declared with
-// <meta name="prerender-status-code"> (200 if not declared).
+// Result is the output of one render. StatusCode is the HTTP status of the main document;
+// when that is 200, <meta name="prerender-status-code"> may override it.
 type Result struct {
 	HTML       string
 	StatusCode int

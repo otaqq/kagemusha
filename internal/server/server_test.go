@@ -3,12 +3,17 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/otaqq/kagemusha/internal/flow"
+	"github.com/otaqq/kagemusha/internal/netguard"
 	"github.com/otaqq/kagemusha/internal/render"
 )
 
@@ -17,11 +22,16 @@ type fakeRenderer struct {
 	res     render.Result
 	err     error
 	delay   time.Duration
+	mu      sync.Mutex
 	calls   int
+	reqs    []render.Request
 }
 
 func (f *fakeRenderer) Render(ctx context.Context, req render.Request) (render.Result, error) {
+	f.mu.Lock()
 	f.calls++
+	f.reqs = append(f.reqs, req)
+	f.mu.Unlock()
 	if f.delay > 0 {
 		time.Sleep(f.delay)
 	}
@@ -120,5 +130,101 @@ func TestRender_QueueTimeoutIs503(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	if rec := get(h, "/render?url=https://shop.example/b"); rec.Code != 503 {
 		t.Fatalf("want 503, got %d", rec.Code)
+	}
+}
+
+type fakeGuard struct{ err error }
+
+func (g fakeGuard) CheckTarget(context.Context, *url.URL) error { return g.err }
+
+func TestRender_GuardRejectsTargetsWithoutRendering(t *testing.T) {
+	cases := []struct {
+		err  error
+		code int
+	}{
+		{fmt.Errorf("wrapped: %w", netguard.ErrNotAllowed), http.StatusForbidden},
+		{errors.New("dns timeout"), http.StatusBadGateway},
+	}
+	for _, c := range cases {
+		f := &fakeRenderer{healthy: true, res: render.Result{HTML: "x"}}
+		rec := get(newHandler(f, Options{Guard: fakeGuard{c.err}, CacheControl: "public"}), "/render?url=http://169.254.169.254/latest/meta-data/")
+		if rec.Code != c.code || f.calls != 0 || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%v: %d calls=%d %v", c.err, rec.Code, f.calls, rec.Header())
+		}
+	}
+	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "x"}}
+	if rec := get(newHandler(f, Options{Guard: fakeGuard{}}), "/render?url=https://shop.example/"); rec.Code != 200 || f.calls != 1 {
+		t.Fatalf("allowed target: %d calls=%d", rec.Code, f.calls)
+	}
+}
+
+func TestRender_ForwardsOnlyConfiguredHeaders(t *testing.T) {
+	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "x"}}
+	h := newHandler(f, Options{ForwardHeaders: []string{"Authorization", "X-Api-Key"}})
+	req := httptest.NewRequest(http.MethodGet, "/https://stg.example/", nil)
+	req.Header.Set("Authorization", "Basic dGVzdDp0ZXN0cGFzcw==")
+	req.Header.Set("Cookie", "session=1")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	got := f.reqs[0].Headers
+	if len(got) != 1 || got["Authorization"] != "Basic dGVzdDp0ZXN0cGFzcw==" {
+		t.Fatalf("headers: %v", got)
+	}
+	get(h, "/https://stg.example/")
+	if f.reqs[1].Headers != nil {
+		t.Fatalf("no incoming header means nothing forwarded: %v", f.reqs[1].Headers)
+	}
+}
+
+func TestRender_RequestsWithDifferentCredentialsNeverShareARender(t *testing.T) {
+	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "x"}, delay: 100 * time.Millisecond}
+	h := New(f, flow.New(4), Options{QueueTimeout: time.Second, ForwardHeaders: []string{"Authorization"}}, nil)
+	var wg sync.WaitGroup
+	for _, auth := range []string{"Basic a", "Basic a", "Basic b", ""} {
+		wg.Go(func() {
+			req := httptest.NewRequest(http.MethodGet, "/render?url=https://stg.example/", nil)
+			if auth != "" {
+				req.Header.Set("Authorization", auth)
+			}
+			h.ServeHTTP(httptest.NewRecorder(), req)
+		})
+		time.Sleep(10 * time.Millisecond)
+	}
+	wg.Wait()
+	if f.calls != 3 {
+		t.Fatalf("want 3 renders (a shared, b, none), got %d", f.calls)
+	}
+}
+
+func TestFlightKey(t *testing.T) {
+	base := render.Request{URL: "https://stg.example/"}
+	if flightKey(base) != base.URL {
+		t.Fatal("no headers: the key is the URL")
+	}
+	a := render.Request{URL: base.URL, Headers: map[string]string{"Authorization": "Basic a", "X-Api-Key": "k"}}
+	b := render.Request{URL: base.URL, Headers: map[string]string{"X-Api-Key": "k", "Authorization": "Basic a"}}
+	c := render.Request{URL: base.URL, Headers: map[string]string{"Authorization": "Basic b", "X-Api-Key": "k"}}
+	if flightKey(a) != flightKey(b) || flightKey(a) == flightKey(c) || strings.Contains(flightKey(a), "Basic") {
+		t.Fatal("key must be stable, credential-specific and must not contain the credentials")
+	}
+}
+
+func TestRender_ResponseHeadersOnEveryRenderResponse(t *testing.T) {
+	extra := http.Header{"X-Robots-Tag": {"noindex"}}
+	ok := &fakeRenderer{healthy: true, res: render.Result{HTML: "x"}}
+	fail := &fakeRenderer{healthy: true, err: errors.New("boom")}
+	for name, rec := range map[string]*httptest.ResponseRecorder{
+		"200":     get(newHandler(ok, Options{ResponseHeaders: extra}), "/render?url=https://stg.example/"),
+		"400":     get(newHandler(ok, Options{ResponseHeaders: extra}), "/render?url=ftp://x"),
+		"403":     get(newHandler(ok, Options{ResponseHeaders: extra, Guard: fakeGuard{netguard.ErrNotAllowed}}), "/render?url=https://x.example/"),
+		"502":     get(newHandler(fail, Options{ResponseHeaders: extra}), "/render?url=https://stg.example/"),
+		"healthz": get(newHandler(ok, Options{ResponseHeaders: extra}), "/healthz"),
+	} {
+		want := "noindex"
+		if name == "healthz" {
+			want = ""
+		}
+		if got := rec.Header().Get("X-Robots-Tag"); got != want {
+			t.Errorf("%s: X-Robots-Tag=%q, want %q", name, got, want)
+		}
 	}
 }

@@ -4,15 +4,19 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/otaqq/kagemusha/internal/flow"
+	"github.com/otaqq/kagemusha/internal/netguard"
 	"github.com/otaqq/kagemusha/internal/render"
 )
 
@@ -22,12 +26,23 @@ type Renderer interface {
 	Healthy(ctx context.Context) bool
 }
 
+// TargetGuard validates the URL to render (SSRF protection). Implemented by netguard.Guard.
+type TargetGuard interface {
+	CheckTarget(ctx context.Context, u *url.URL) error
+}
+
 // Options configures the HTTP layer.
 type Options struct {
 	CacheControl string
 	DenyPaths    []string
 	QueueTimeout time.Duration
-	Request      render.Request // defaults other than the URL (ReadyFlag/IdleQuiet/PageTimeout/block lists)
+	Request      render.Request // defaults other than the URL and Headers (ReadyFlag/IdleQuiet/PageTimeout/block lists/guard)
+	// Guard rejects targets outside the allowlist or on non-public addresses (nil disables the check).
+	Guard TargetGuard
+	// ForwardHeaders are incoming request headers passed on to the browser (e.g. Authorization for a Basic-auth staging site).
+	ForwardHeaders []string
+	// ResponseHeaders are added to every render response (e.g. X-Robots-Tag: noindex).
+	ResponseHeaders http.Header
 }
 
 // New builds the http.Handler.
@@ -83,11 +98,25 @@ func (s *server) renderCompat(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) {
+	for k, vs := range s.opt.ResponseHeaders {
+		w.Header()[k] = vs
+	}
 	noStore(w)
 	u, err := url.Parse(target)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		http.Error(w, "invalid url", http.StatusBadRequest)
 		return
+	}
+	if s.opt.Guard != nil {
+		if err := s.opt.Guard.CheckTarget(req.Context(), u); err != nil {
+			s.log.Warn("target rejected", "url", u.String(), "err", err)
+			if errors.Is(err, netguard.ErrNotAllowed) {
+				http.Error(w, "target not allowed", http.StatusForbidden)
+			} else {
+				http.Error(w, "target lookup failed", http.StatusBadGateway)
+			}
+			return
+		}
 	}
 	for _, p := range s.opt.DenyPaths {
 		if strings.HasPrefix(u.Path, p) {
@@ -97,12 +126,13 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 	}
 	rreq := s.opt.Request
 	rreq.URL = u.String()
+	rreq.Headers = s.forwarded(req)
 
 	waitCtx, cancel := context.WithTimeout(req.Context(), s.opt.QueueTimeout)
 	defer cancel()
 	start := time.Now()
 	// Run the render with its own ctx so a primary disconnect does not cancel it
-	v, err := s.gate.Do(waitCtx, context.Background(), rreq.URL, func(ctx context.Context) (any, error) {
+	v, err := s.gate.Do(waitCtx, context.Background(), flightKey(rreq), func(ctx context.Context) (any, error) {
 		return s.r.Render(ctx, rreq)
 	})
 	if err != nil {
@@ -119,6 +149,38 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 	s.log.Info("render", "url", rreq.URL, "status", res.StatusCode, "trigger", res.Trigger,
 		"duration_ms", res.Duration.Milliseconds(), "total_ms", time.Since(start).Milliseconds())
 	writeResult(w, res, s.opt.CacheControl)
+}
+
+// forwarded picks the configured headers from the incoming request.
+func (s *server) forwarded(req *http.Request) map[string]string {
+	var h map[string]string
+	for _, name := range s.opt.ForwardHeaders {
+		if v := req.Header.Get(name); v != "" {
+			if h == nil {
+				h = map[string]string{}
+			}
+			h[name] = v
+		}
+	}
+	return h
+}
+
+// flightKey is the single-flight key. Forwarded headers are part of it, so a request without
+// credentials never shares the result of one with credentials.
+func flightKey(r render.Request) string {
+	if len(r.Headers) == 0 {
+		return r.URL
+	}
+	names := make([]string, 0, len(r.Headers))
+	for n := range r.Headers {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	sum := sha256.New()
+	for _, n := range names {
+		sum.Write([]byte(n + ":" + r.Headers[n] + "\n"))
+	}
+	return r.URL + " " + hex.EncodeToString(sum.Sum(nil))
 }
 
 // writeResult applies the response contract: only 200 gets cacheable headers; anything else is no-store.

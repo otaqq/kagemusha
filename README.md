@@ -52,7 +52,7 @@ Or with compose: `docker compose -f docker/compose.yaml up --build`.
    - `window.prerenderReady === true` (first-class; set it from your app when the page is done), else
    - network idle for `KAGEMUSHA_IDLE_QUIET_MS` after `load`, else
    - the absolute limit `KAGEMUSHA_PAGE_TIMEOUT_MS` (returns the partial DOM, marked `X-Kagemusha-Trigger: timeout`).
-   The page may declare its status with `<meta name="prerender-status-code" content="404">`.
+   The response status is the HTTP status of the page itself (a `401`/`404`/`5xx` is passed through, never turned into a `200`). A page served as `200` may declare another status with `<meta name="prerender-status-code" content="404">`.
 4. **Response contract**: only `200` HTML carries your `KAGEMUSHA_CACHE_CONTROL`; anything else is `Cache-Control: no-store`. Upstream page headers are never copied.
 5. **Lifecycle**: a supervisor owns the browser process. It restarts it when the watchdog sees it unresponsive, on a schedule, and the worker itself exits gracefully after N renders or T hours so leaks never mature. Exit code `0` = planned recycle, `1` = crash. `/healthz` reports the real browser state and does not consume a render slot.
 
@@ -76,6 +76,7 @@ All settings are environment variables with safe defaults.
 |---|---|---|
 | `KAGEMUSHA_ENGINE` | `chrome` | `chrome` or `lightpanda` (must match the image you built) |
 | `KAGEMUSHA_ENGINE_PATH` | engine default | Path to the browser binary |
+| `KAGEMUSHA_LISTEN_HOST` | – (all interfaces) | Listen address, e.g. `127.0.0.1` behind a local reverse proxy |
 | `KAGEMUSHA_PORT` | `3000` | Listen port |
 | `KAGEMUSHA_MAX_CONCURRENT` | `4` | Concurrent renders per worker |
 | `KAGEMUSHA_QUEUE_TIMEOUT_MS` | `45000` | Max time a request waits for a slot. Keep it **below** your LB idle timeout |
@@ -90,6 +91,27 @@ All settings are environment variables with safe defaults.
 | `KAGEMUSHA_WORKER_MAX_AGE` | `6h` | Worker exits (code 0) after this age |
 | `KAGEMUSHA_BROWSER_RESTART_PERIOD` | `10m` | Planned browser restart period |
 | `KAGEMUSHA_WATCHDOG_TIMEOUT_MS` | `10000` | Restart the browser after this long unresponsive |
+| `KAGEMUSHA_TARGET_HOSTS` | – | If set, only these hosts (subdomains included) may be rendered; others get `403` |
+| `KAGEMUSHA_ALLOW_PRIVATE_TARGETS` | `off` | Allow private, loopback and link-local addresses (local development only) |
+| `KAGEMUSHA_FORWARD_HEADERS` | – | Incoming request headers passed on to the page, e.g. `Authorization` for a Basic-auth staging site |
+| `KAGEMUSHA_FORWARD_HEADERS_HOSTS` | – | Extra hosts that also receive forwarded headers (the target's own origin always does) |
+| `KAGEMUSHA_RESPONSE_HEADERS` | – | Newline-separated `Name: value` lines added to every render response, e.g. `X-Robots-Tag: noindex` |
+| `KAGEMUSHA_USER_AGENT` | browser UA + ` kagemusha` | User agent the browser sends |
+
+## Security
+
+kagemusha has **no authentication of its own**: who may reach it is decided by your network and edge. What it does by itself:
+
+- **SSRF protection**: the target and every request the page makes (redirects included) must resolve to a public address. Cloud metadata (`169.254.169.254`), private networks and loopback are refused unless `KAGEMUSHA_ALLOW_PRIVATE_TARGETS=on`. Set `KAGEMUSHA_TARGET_HOSTS` to your own domains so it cannot be used to render anyone else's site. Limitation: WebSocket connections and DNS rebinding between the check and the browser's own lookup are not covered; keep kagemusha off networks that expose sensitive services.
+- **Staging behind Basic auth**: set `KAGEMUSHA_FORWARD_HEADERS=Authorization`. kagemusha stores no credentials; it passes on what the caller sent, only to the target's origin (and `KAGEMUSHA_FORWARD_HEADERS_HOSTS`), never to third parties. A caller without credentials gets the site's own `401`, so bots cannot read your staging site through kagemusha:
+
+  ```bash
+  curl -u test:testpass -A Googlebot https://stg.example.com/   # rendered page
+  curl -A Googlebot https://stg.example.com/                    # 401
+  ```
+
+  Requests with different forwarded headers are never merged by single-flight. If a CDN sits in front, make it check authentication before serving from cache. Add `KAGEMUSHA_RESPONSE_HEADERS="X-Robots-Tag: noindex"` on staging as a safety net.
+- **Loop prevention**: the browser's user agent ends with ` kagemusha`. Do not route that user agent back to kagemusha at your edge.
 
 ## Deploying
 
@@ -98,6 +120,7 @@ kagemusha renders; **your edge decides who gets the render**. Route bot user age
 ```nginx
 map $http_user_agent $is_bot {
   default 0;
+  ~*kagemusha 0;   # kagemusha's own page loads (checked first)
   ~*(googlebot|bingbot|slackbot|twitterbot|facebookexternalhit|gptbot|claudebot) 1;
 }
 location / {
@@ -107,6 +130,8 @@ location / {
 ```
 
 Run several small workers behind a load balancer rather than one big one; the orchestrator (ECS, Kubernetes) replaces workers that recycle themselves.
+
+On a single VPS, let the reverse proxy do Basic auth and bot routing, and keep kagemusha on loopback (`KAGEMUSHA_LISTEN_HOST=127.0.0.1`, `KAGEMUSHA_TARGET_HOSTS=example.com`). Exclude kagemusha's own user agent from the bot match so its page loads reach the SPA.
 
 ### Operational notes
 

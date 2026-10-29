@@ -10,10 +10,12 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
@@ -35,7 +37,11 @@ type Engine struct {
 	browserCtx    context.Context
 	allocCancel   context.CancelFunc
 	browserCancel context.CancelFunc
+	userAgent     string // browser default user agent plus the kagemusha marker
 }
+
+// uaMarker is appended to the browser user agent so edges can tell kagemusha's own requests from bots (loop prevention).
+const uaMarker = " kagemusha"
 
 // New creates an Engine from a launch definition without starting it.
 func New(path string, args []string, log *slog.Logger) *Engine {
@@ -67,8 +73,12 @@ func (e *Engine) Launch(ctx context.Context) error {
 		allocCancel()
 		return fmt.Errorf("chrome: launch: %w", ctx.Err())
 	}
+	ua := ""
+	if v, err := chromedp.CallBrowser(browserCtx, browser.GetVersion, cdp.Empty{}); err == nil && v.UserAgent != "" {
+		ua = v.UserAgent + uaMarker
+	}
 	e.mu.Lock()
-	e.browserCtx, e.allocCancel, e.browserCancel = browserCtx, allocCancel, browserCancel
+	e.browserCtx, e.allocCancel, e.browserCancel, e.userAgent = browserCtx, allocCancel, browserCancel, ua
 	e.mu.Unlock()
 	return nil
 }
@@ -93,12 +103,17 @@ func flagsFromArgs(args []string) []chromedp.ExecAllocatorOption {
 }
 
 func (e *Engine) browser() (context.Context, error) {
+	ctx, _, err := e.browserAndUA()
+	return ctx, err
+}
+
+func (e *Engine) browserAndUA() (context.Context, string, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if e.browserCtx == nil {
-		return nil, ErrNotLaunched
+		return nil, "", ErrNotLaunched
 	}
-	return e.browserCtx, nil
+	return e.browserCtx, e.userAgent, nil
 }
 
 // Healthy reports whether the browser answers CDP.
@@ -171,7 +186,7 @@ func (a *activity) idle(quiet time.Duration) bool {
 
 // Render renders the page in a disposable per-render BrowserContext and returns the HTML.
 func (e *Engine) Render(ctx context.Context, req render.Request) (render.Result, error) {
-	bctx, err := e.browser()
+	bctx, defaultUA, err := e.browserAndUA()
 	if err != nil {
 		return render.Result{}, err
 	}
@@ -196,7 +211,7 @@ func (e *Engine) Render(ctx context.Context, req render.Request) (render.Result,
 	defer deadlineCancel()
 
 	act := &activity{last: time.Now()}
-	filter := newFilter(req.BlockDomains, req.AllowDomains)
+	filter := newFilter(req)
 	if filter.active() {
 		paused := chromedp.Events(tabCtx, fetch.RequestPaused)
 		go func() {
@@ -212,6 +227,30 @@ func (e *Engine) Render(ctx context.Context, req render.Request) (render.Result,
 	watch(tabCtx, network.LoadingFinished, act.finish)
 	watch(tabCtx, network.LoadingFailed, act.finish)
 	watch(tabCtx, page.LoadEventFired, act.load)
+	// In Chrome the main frame id equals the target id. The last main-frame document response is the page's HTTP status
+	mainFrame := cdp.FrameID(chromedp.FromContext(tabCtx).Target.TargetID)
+	var docStatus atomic.Int64
+	responses := chromedp.Events(tabCtx, network.ResponseReceived)
+	go func() {
+		for ev, err := range responses {
+			if err != nil {
+				return
+			}
+			if ev.Type == network.ResourceTypeDocument && ev.FrameID == mainFrame && ev.Response != nil {
+				docStatus.Store(ev.Response.Status)
+			}
+		}
+	}()
+
+	ua := req.UserAgent
+	if ua == "" {
+		ua = defaultUA
+	}
+	if ua != "" {
+		if _, err := chromedp.Call(tabCtx, emulation.SetUserAgentOverride, emulation.SetUserAgentOverrideParams{UserAgent: ua}); err != nil {
+			return render.Result{}, fmt.Errorf("chrome: set user agent: %w", err)
+		}
+	}
 
 	if _, err := chromedp.Call(tabCtx, network.Enable, network.EnableParams{}); err != nil {
 		return render.Result{}, fmt.Errorf("chrome: enable network: %w", err)
@@ -231,15 +270,14 @@ func (e *Engine) Render(ctx context.Context, req render.Request) (render.Result,
 	gctx, gcancel := context.WithTimeout(tabCtx, 5*time.Second)
 	defer gcancel()
 	res := render.Result{Trigger: trigger}
-	if res.StatusCode, err = chromedp.Run(gctx, chromedp.Evaluate[int](statusScript)); err != nil {
+	declared, err := chromedp.Run(gctx, chromedp.Evaluate[int](statusScript))
+	if err != nil {
 		return render.Result{}, fmt.Errorf("chrome: capture: %w", err)
 	}
 	if res.HTML, err = chromedp.Run(gctx, chromedp.OuterHTML(chromedp.CSS("html"))); err != nil {
 		return render.Result{}, fmt.Errorf("chrome: capture: %w", err)
 	}
-	if res.StatusCode == 0 {
-		res.StatusCode = 200
-	}
+	res.StatusCode = statusCode(int(docStatus.Load()), declared)
 	res.Duration = time.Since(start)
 	return res, nil
 }
@@ -285,11 +323,26 @@ func (e *Engine) await(deadlineCtx context.Context, req render.Request, act *act
 	}
 }
 
-// decide continues or fails a request paused by Fetch, according to the block list.
+// statusCode picks the response status: a non-200 HTTP status of the main document wins
+// (an error page must never be served as a cacheable 200); otherwise the declared meta status, else 200.
+func statusCode(httpStatus, declared int) int {
+	if httpStatus != 0 && httpStatus != 200 {
+		return httpStatus
+	}
+	if declared != 0 {
+		return declared
+	}
+	return 200
+}
+
+// decide continues or fails a request paused by Fetch, according to the filter.
 func (e *Engine) decide(tabCtx context.Context, ev fetch.EventRequestPaused, f *filter) {
-	if f.blocked(ev.Request.URL) {
+	if f.blocked(tabCtx, ev.Request.URL) {
 		_, _ = chromedp.Call(tabCtx, fetch.FailRequest, fetch.FailRequestParams{RequestID: ev.RequestID, ErrorReason: network.ErrorReasonBlockedByClient})
 		return
 	}
-	_, _ = chromedp.Call(tabCtx, fetch.ContinueRequest, fetch.ContinueRequestParams{RequestID: ev.RequestID})
+	_, _ = chromedp.Call(tabCtx, fetch.ContinueRequest, fetch.ContinueRequestParams{
+		RequestID: ev.RequestID,
+		Headers:   f.requestHeaders(ev.Request.URL, ev.Request.Headers),
+	})
 }
