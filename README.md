@@ -9,7 +9,7 @@ kagemusha owns a headless browser, renders the page on request, and returns the 
 flowchart TD
     edge["CDN / LB / reverse proxy<br/><i>decides who is a bot — not kagemusha's job</i>"]
     k["kagemusha"]
-    chrome["Headless Chromium<br/>(resident, supervised)"]
+    chrome["Headless browser: Chromium or Lightpanda<br/>(resident, supervised)"]
     resp["200 text/html<br/>+ Cache-Control you configured"]
 
     edge -- "GET /render?url=https://shop.example/items/1" --> k
@@ -53,7 +53,7 @@ Or with compose: `docker compose -f docker/compose.yaml up --build`.
 | `kagemusha:chrome-slim` | debian:trixie-slim | Debian Chromium | 809 MB |
 | `kagemusha:lightpanda-slim` | debian:trixie-slim | Lightpanda | 167 MB |
 
-Use the distroless images in production; the `-slim` ones add a shell for debugging. `docker/Dockerfile` builds the distroless images, `docker/Dockerfile.slim` the slim ones (`--build-arg ENGINE=chrome|lightpanda`). Container health checks can run `kagemusha healthcheck` (it probes `/healthz`), as there is no shell or curl in distroless.
+Use the distroless images in production; the `-slim` ones add a shell for debugging. `docker/Dockerfile` builds the distroless images, `docker/Dockerfile.slim` the slim ones (`--build-arg ENGINE=chrome|lightpanda`). Container health checks can run `kagemusha healthcheck` (it probes `/healthz`), as there is no shell or curl in distroless. See [docs/engines.md](docs/engines.md) for the comparison.
 
 ## How it works
 
@@ -76,7 +76,7 @@ Every wait has a deadline. A dead browser is a failed render, never a dead proce
 | `GET /render?url=<absolute URL>` | Render and return HTML |
 | `GET /https://host/path` | prerender-compatible form of the above |
 | `GET /healthz` | `200` when the browser answers CDP and flow control is moving, `503` otherwise |
-| `GET /metrics` | Prometheus metrics (see below; `KAGEMUSHA_METRICS=off` removes it) |
+| `GET /metrics` | Prometheus metrics ([list](docs/operations.md#metrics); `KAGEMUSHA_METRICS=off` removes it) |
 
 Response headers: `Cache-Control` (per contract above), `X-Kagemusha-Trigger: ready|idle|timeout|redirect`, `Location` on a cross-host redirect, and with the in-process cache on, `X-Kagemusha-Cache: hit|miss` plus `Age` on hits.
 
@@ -118,94 +118,23 @@ All settings are environment variables with safe defaults.
 | `KAGEMUSHA_USER_AGENT` | browser UA + ` kagemusha` | User agent the browser sends |
 | `KAGEMUSHA_METRICS` | `on` | Serve `GET /metrics` |
 
-## Metrics
-
-`GET /metrics` serves the Prometheus text format and, like `/healthz`, never takes a render slot. No URL appears in any label.
-
-| Metric | Use |
-|---|---|
-| `kagemusha_requests_total{outcome}` | What happened to each request: `rendered`, `cache_hit`, `queue_timeout`, `render_failed`, `target_not_allowed`, `target_lookup_failed`, `denied_path`, `invalid_url` |
-| `kagemusha_renders_total{code,trigger}` | Actual renders; compare with `outcome="rendered"` to see how much single-flight saves |
-| `kagemusha_render_duration_seconds` | Render duration histogram |
-| `kagemusha_queue_running`, `kagemusha_queue_waiting`, `kagemusha_max_concurrent` | Scale out on `waiting` (or `running / max_concurrent`) rather than CPU |
-| `kagemusha_browser_restarts_total{reason}`, `kagemusha_browser_relaunch_failures_total` | `planned`, `watchdog`, `requested`; a rising `watchdog` means hangs |
-| `kagemusha_worker_renders_total`, `process_start_time_seconds` | Progress toward the worker recycle limits |
-| `kagemusha_cache_entries` | In-process cache size (when enabled) |
-
-Worker exit reasons are not metrics (the process is gone); they are logged and visible as the exit code.
-
-## Logs
-
-JSON lines on stdout. Every render request ends with exactly one `"msg":"request"` line; `outcome` matches `kagemusha_requests_total`:
-
-```json
-{"time":"…","level":"INFO","msg":"request","outcome":"rendered","status":200,"url":"https://shop.example/items/1","ua":"Mozilla/5.0 (compatible; Googlebot/2.1; …)","total_ms":6120,"trigger":"ready","render_ms":5980}
-```
-
-| Field | Meaning |
-|---|---|
-| `outcome` | `rendered`, `cache_hit`, `queue_timeout`, `render_failed`, `target_not_allowed`, `target_lookup_failed`, `denied_path`, `invalid_url` |
-| `status` | HTTP status kagemusha answered |
-| `url` / `ua` | Target URL (tracking parameters stripped) and the caller's user agent. Forwarded headers are never logged |
-| `total_ms` / `render_ms` | Time until the answer / time the browser spent rendering (`render_ms` only when this request waited for a render) |
-| `trigger`, `err` | Completion trigger; error text on failures |
-
-Levels: `ERROR` for `render_failed`, `WARN` for `queue_timeout` and rejected targets, `INFO` otherwise. Lifecycle events (worker limits, browser restarts, exit reasons) use other messages.
-
-```bash
-# Slowest renders and who asked for them
-jq -c 'select(.msg=="request" and .render_ms) | {render_ms, url, ua}' kagemusha.log | sort -t: -k2 -nr | head
-```
-
-```
-# CloudWatch Logs Insights: outcomes and p95 per 5 minutes
-filter msg = "request"
-| stats count(*) as requests, pct(render_ms, 95) as p95_render_ms by outcome, bin(5m)
-```
-
 ## Security
 
-kagemusha has **no authentication of its own**: who may reach it is decided by your network and edge. What it does by itself:
+kagemusha has **no authentication of its own**: your network and edge decide who reaches it. By itself it:
 
-- **SSRF protection**: the target and every request the page makes (redirects included) must resolve to a public address. Cloud metadata (`169.254.169.254`), private networks and loopback are refused unless `KAGEMUSHA_ALLOW_PRIVATE_TARGETS=on`. Set `KAGEMUSHA_TARGET_HOSTS` to your own domains so it cannot be used to render anyone else's site. Limitation: WebSocket connections and DNS rebinding between the check and the browser's own lookup are not covered; keep kagemusha off networks that expose sensitive services.
-- **Staging behind Basic auth**: set `KAGEMUSHA_FORWARD_HEADERS=Authorization`. kagemusha stores no credentials; it passes on what the caller sent, only to the target's origin (and `KAGEMUSHA_FORWARD_HEADERS_HOSTS`), never to third parties. A caller without credentials gets the site's own `401`, so bots cannot read your staging site through kagemusha:
+- refuses targets and page requests that resolve to private, loopback or link-local addresses (cloud metadata included), and with `KAGEMUSHA_TARGET_HOSTS` anything outside your domains;
+- renders staging sites behind Basic auth without storing credentials: `KAGEMUSHA_FORWARD_HEADERS=Authorization` passes the caller's header to the target origin only, so a caller without credentials gets the site's own `401`;
+- never turns an error page into a cacheable `200`, and never copies the page's headers.
 
-  ```bash
-  curl -u test:testpass -A Googlebot https://stg.example.com/   # rendered page
-  curl -A Googlebot https://stg.example.com/                    # 401
-  ```
+Details, limitations and a single-server setup: [docs/security.md](docs/security.md).
 
-  Requests with different forwarded headers are never merged by single-flight. If a CDN sits in front, make it check authentication before serving from cache. Add `KAGEMUSHA_RESPONSE_HEADERS="X-Robots-Tag: noindex"` on staging as a safety net.
-- **Loop prevention**: the browser's user agent ends with ` kagemusha`. Do not route that user agent back to kagemusha at your edge.
+## Operations
 
-## Deploying
+Route bot user agents to kagemusha at your edge (excluding its own user agent, `kagemusha`), run several small workers, and let the orchestrator replace the ones that recycle themselves. Keep `QUEUE_TIMEOUT + PAGE_TIMEOUT + 5 s` below your load balancer's idle timeout, and set `KAGEMUSHA_CACHE_CONTROL` so the CDN caches renders.
 
-kagemusha renders; **your edge decides who gets the render**. Route bot user agents (Googlebot, Bingbot, link previews, AI crawlers, …) to kagemusha and everyone else to the SPA. Typical nginx sketch:
+`GET /metrics` (Prometheus) and one JSON log line per request (`"msg":"request"`, with the same `outcome` values) show what happened to every request.
 
-```nginx
-map $http_user_agent $is_bot {
-  default 0;
-  ~*kagemusha 0;   # kagemusha's own page loads (checked first)
-  ~*(googlebot|bingbot|slackbot|twitterbot|facebookexternalhit|gptbot|claudebot) 1;
-}
-location / {
-  if ($is_bot) { proxy_pass http://kagemusha:3000/render?url=$scheme://$host$request_uri; }
-  try_files $uri /index.html;
-}
-```
-
-Run several small workers behind a load balancer rather than one big one; the orchestrator (ECS, Kubernetes) replaces workers that recycle themselves.
-
-On a single VPS, let the reverse proxy do Basic auth and bot routing, and keep kagemusha on loopback (`KAGEMUSHA_LISTEN_HOST=127.0.0.1`, `KAGEMUSHA_TARGET_HOSTS=example.com`). Exclude kagemusha's own user agent from the bot match so its page loads reach the SPA.
-
-### Operational notes
-
-- **Amplification**: one render fans out into dozens of sub-requests. Your own WAF rate limits will see kagemusha's egress IP as a burst. Use `KAGEMUSHA_BLOCK_DOMAINS` to drop analytics/ads/session-recording beacons — it also makes renders finish faster.
-- **Timeouts**: the slowest answer is `KAGEMUSHA_QUEUE_TIMEOUT_MS` + `KAGEMUSHA_PAGE_TIMEOUT_MS` + 5 s (capture). Keep that below the LB / CDN idle timeout, or clients disconnect before you answer. The defaults (20 s + 30 s + 5 s) fit a 60 s timeout.
-- **Impatient preview bots** (Slack, Facebook: 5–9 s client timeouts) only need OGP tags. Serve them a lightweight endpoint upstream if full renders are slow.
-- **Caching is two-layered**: the CDN is the main cache; the in-process cache (`KAGEMUSHA_CACHE_TTL`, short is enough) absorbs bots retrying right after a render. Only `200` is cached, under the same key as single-flight, so a page rendered with forwarded credentials is served only to the same credentials. Set `KAGEMUSHA_CACHE_CONTROL` deliberately; the default `no-store` means *the CDN caches nothing* until you decide otherwise.
-- **/dev/shm**: Chromium needs shared memory. `--disable-dev-shm-usage` is on, but give the container `--shm-size=512m` anyway.
-- **Signals**: `SIGTERM` drains in-flight renders (up to `PAGE_TIMEOUT + 5s`) and exits `0`.
+Routing, lifecycle, timeouts, caching, the metric list and log fields: [docs/operations.md](docs/operations.md).
 
 ## Development
 
@@ -241,26 +170,18 @@ testdata/spa/         tiny SPAs used by integration tests
 
 ## Engines
 
-- **Chromium** (default, `--build-arg ENGINE=chrome`): the reference engine. Uses only four CDP areas — Page navigation, Fetch interception, Runtime evaluation, DOM capture — plus `Browser.getVersion` for health. The distroless image ships Google's chrome-headless-shell (Chrome for Testing, pinned with checksums) with the libraries it needs; the slim image uses Debian's Chromium package.
-- **Lightpanda** (`--build-arg ENGINE=lightpanda`): a much lighter browser that speaks CDP, with partial DOM/Web API coverage, no layout and no image loading. It passes the same integration contract as Chromium (completion signals, status codes, header forwarding, SSRF guard, cross-host redirect, script stripping) and renders the test SPA to the same content. **Compare it with Chromium on your own pages before switching**: an API it lacks can leave a page half-rendered.
+- **Chromium** (default): the reference engine. The distroless image ships chrome-headless-shell, about 3× faster than Debian's full Chromium in the slim image.
+- **Lightpanda**: no layout or rendering, an order of magnitude less memory. It passes the same integration contract as Chromium, but its Web API coverage is partial: **compare it with Chromium on your own pages before switching.** There is no automatic fallback between engines.
 
-  | Same 40 renders of the test SPA, 4 at a time | Time | Peak memory | Image |
-  |---|---|---|---|
-  | `chrome` (chrome-headless-shell 156) | 4.2 s | 340 MB | 348 MB |
-  | `chrome-slim` (Debian Chromium 156) | 12.6 s | 432 MB | 809 MB |
-  | `lightpanda` (1.0.1) | 3.5 s | 74 MB | 112 MB |
-  | `lightpanda-slim` (1.0.1) | 3.5 s | 32 MB | 167 MB |
-
-  How kagemusha drives it: `lightpanda serve` on a free loopback port, one CDP connection per render (Lightpanda allows one browser context per connection), the ` kagemusha` marker through `--user-agent-suffix` (it must not claim to be another browser), and **telemetry off** (`LIGHTPANDA_DISABLE_TELEMETRY=true`). The release binary is a glibc build (Debian-based images); the version and checksums are pinned in both Dockerfiles.
+Benchmarks, how each image is built, how Lightpanda is driven (telemetry off) and how to update the pinned browsers: [docs/engines.md](docs/engines.md).
 
 ## Roadmap
 
-- [x] `/metrics` (Prometheus)
-- [x] In-process LRU cache
+- [ ] Published images on ghcr.io: four variants, `linux/amd64` and `linux/arm64`
+- [ ] Automated updates for the pinned browsers (chrome-headless-shell, Lightpanda); scanners do not cover them
+- [ ] Vulnerability scan of all four images in CI (today only `chrome`)
 - [ ] Stale-while-revalidate for the in-process cache
-- [x] Lightpanda launcher + engine comparison test
 - [ ] Automatic browser restart after consecutive render failures
-- [ ] Smaller runtime image
 
 ## Status
 
