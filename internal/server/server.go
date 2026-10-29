@@ -12,9 +12,11 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/otaqq/kagemusha/internal/cache"
 	"github.com/otaqq/kagemusha/internal/flow"
 	"github.com/otaqq/kagemusha/internal/netguard"
 	"github.com/otaqq/kagemusha/internal/render"
@@ -45,6 +47,8 @@ type Options struct {
 	ResponseHeaders http.Header
 	// StripQueryParams are removed from the target URL before rendering and single-flight (a trailing * matches any suffix).
 	StripQueryParams []string
+	// Cache holds recent 200 renders under the single-flight key (nil disables it).
+	Cache *cache.LRU[render.Result]
 }
 
 // New builds the http.Handler.
@@ -131,12 +135,28 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 	rreq.URL = u.String()
 	rreq.Headers = s.forwarded(req)
 
+	key := flightKey(rreq)
+	if s.opt.Cache != nil {
+		if res, age, ok := s.opt.Cache.Get(key); ok {
+			w.Header().Set("X-Kagemusha-Cache", "hit")
+			w.Header().Set("Age", strconv.Itoa(int(age.Seconds())))
+			s.log.Info("render", "url", rreq.URL, "status", res.StatusCode, "trigger", res.Trigger, "cache", "hit")
+			writeResult(w, res, s.opt.CacheControl)
+			return
+		}
+		w.Header().Set("X-Kagemusha-Cache", "miss")
+	}
+
 	waitCtx, cancel := context.WithTimeout(req.Context(), s.opt.QueueTimeout)
 	defer cancel()
 	start := time.Now()
 	// Run the render with its own ctx so a primary disconnect does not cancel it
-	v, err := s.gate.Do(waitCtx, context.Background(), flightKey(rreq), func(ctx context.Context) (any, error) {
-		return s.r.Render(ctx, rreq)
+	v, err := s.gate.Do(waitCtx, context.Background(), key, func(ctx context.Context) (any, error) {
+		res, err := s.r.Render(ctx, rreq)
+		if err == nil && s.opt.Cache != nil && (res.StatusCode == 0 || res.StatusCode == http.StatusOK) {
+			s.opt.Cache.Set(key, res)
+		}
+		return res, err
 	})
 	if err != nil {
 		if errors.Is(err, flow.ErrQueueTimeout) {

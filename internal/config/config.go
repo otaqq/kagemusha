@@ -46,6 +46,8 @@ type Config struct {
 	ResponseHeaders      http.Header
 	UserAgent            string
 	StripQueryParams     []string
+	CacheTTL             time.Duration
+	CacheMaxEntries      int
 }
 
 // Default returns the default settings.
@@ -63,6 +65,7 @@ func Default() Config {
 		WorkerMaxAge:         6 * time.Hour,
 		BrowserRestartPeriod: 10 * time.Minute,
 		WatchdogTimeout:      10 * time.Second,
+		CacheMaxEntries:      100,
 	}
 }
 
@@ -140,6 +143,18 @@ func Load(getenv Getenv) (Config, error) {
 	if c.StripQueryParams, err = stripParamsEnv(getenv, "KAGEMUSHA_STRIP_QUERY_PARAMS"); err != nil {
 		return c, err
 	}
+	if c.CacheTTL, err = durEnv(getenv, "KAGEMUSHA_CACHE_TTL", c.CacheTTL); err != nil {
+		return c, err
+	}
+	if c.CacheTTL < 0 {
+		return c, fmt.Errorf("KAGEMUSHA_CACHE_TTL: must be >= 0")
+	}
+	if c.CacheMaxEntries, err = intEnv(getenv, "KAGEMUSHA_CACHE_MAX_ENTRIES", c.CacheMaxEntries); err != nil {
+		return c, err
+	}
+	if c.CacheMaxEntries < 1 {
+		return c, fmt.Errorf("KAGEMUSHA_CACHE_MAX_ENTRIES: must be >= 1")
+	}
 	return c, nil
 }
 
@@ -180,7 +195,8 @@ func forwardHeadersEnv(getenv Getenv, key string) ([]string, error) {
 
 // reserved are response headers owned by the response contract.
 var reserved = map[string]bool{
-	"Cache-Control": true, "Content-Type": true, "Content-Length": true, "Location": true, "X-Kagemusha-Trigger": true,
+	"Cache-Control": true, "Content-Type": true, "Content-Length": true, "Location": true, "Age": true,
+	"X-Kagemusha-Trigger": true, "X-Kagemusha-Cache": true,
 }
 
 // responseHeadersEnv parses newline-separated "Name: value" lines (values may contain commas).

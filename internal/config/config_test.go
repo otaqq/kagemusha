@@ -150,3 +150,24 @@ func TestLoad_StripQueryParams(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_Cache(t *testing.T) {
+	c, err := Load(env(nil))
+	if err != nil || c.CacheTTL != 0 || c.CacheMaxEntries != 100 {
+		t.Fatalf("cache must default to off: %v %+v", err, c)
+	}
+	c, err = Load(env(map[string]string{"KAGEMUSHA_CACHE_TTL": "5m", "KAGEMUSHA_CACHE_MAX_ENTRIES": "20"}))
+	if err != nil || c.CacheTTL != 5*time.Minute || c.CacheMaxEntries != 20 {
+		t.Fatalf("got %v %+v", err, c)
+	}
+	for _, m := range []map[string]string{
+		{"KAGEMUSHA_CACHE_TTL": "soon"},
+		{"KAGEMUSHA_CACHE_TTL": "-1s"},
+		{"KAGEMUSHA_CACHE_MAX_ENTRIES": "x"},
+		{"KAGEMUSHA_CACHE_MAX_ENTRIES": "0"},
+	} {
+		if _, err := Load(env(m)); err == nil {
+			t.Errorf("expected error for %v", m)
+		}
+	}
+}

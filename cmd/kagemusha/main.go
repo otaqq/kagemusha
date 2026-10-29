@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/otaqq/kagemusha/internal/cache"
 	"github.com/otaqq/kagemusha/internal/config"
 	"github.com/otaqq/kagemusha/internal/flow"
 	"github.com/otaqq/kagemusha/internal/lifecycle"
@@ -69,6 +70,10 @@ func run() int {
 	}
 
 	guard := netguard.New(cfg.TargetHosts, cfg.AllowPrivateTargets, nil)
+	var pageCache *cache.LRU[render.Result]
+	if cfg.CacheTTL > 0 {
+		pageCache = cache.New[render.Result](cfg.CacheTTL, cfg.CacheMaxEntries, nil)
+	}
 	h := server.New(sup, flow.New(cfg.MaxConcurrent), server.Options{
 		CacheControl:     cfg.CacheControl,
 		DenyPaths:        cfg.DenyPaths,
@@ -77,6 +82,7 @@ func run() int {
 		ForwardHeaders:   cfg.ForwardHeaders,
 		ResponseHeaders:  cfg.ResponseHeaders,
 		StripQueryParams: cfg.StripQueryParams,
+		Cache:            pageCache,
 		Request: render.Request{
 			ReadyFlag: cfg.ReadyFlag, IdleQuiet: cfg.IdleQuiet, PageTimeout: cfg.PageTimeout,
 			BlockDomains: cfg.BlockDomains, AllowDomains: cfg.AllowDomains,

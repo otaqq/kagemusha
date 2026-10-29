@@ -66,7 +66,7 @@ Every wait has a deadline. A dead browser is a failed render, never a dead proce
 | `GET /https://host/path` | prerender-compatible form of the above |
 | `GET /healthz` | `200` when the browser answers CDP, `503` otherwise |
 
-Response headers: `Cache-Control` (per contract above), `X-Kagemusha-Trigger: ready|idle|timeout`.
+Response headers: `Cache-Control` (per contract above), `X-Kagemusha-Trigger: ready|idle|timeout`, and with the in-process cache on, `X-Kagemusha-Cache: hit|miss` plus `Age` on hits.
 
 ## Configuration
 
@@ -88,6 +88,8 @@ All settings are environment variables with safe defaults.
 | `KAGEMUSHA_DENY_PATHS` | – | Path prefixes answered with `404` without rendering |
 | `KAGEMUSHA_STRIP_QUERY_PARAMS` | – | Query parameters removed before rendering and single-flight, e.g. `utm_*,fbclid,gclid` (trailing `*` matches any suffix). Match your CDN cache key |
 | `KAGEMUSHA_CACHE_CONTROL` | `no-store` | `Cache-Control` for `200` HTML |
+| `KAGEMUSHA_CACHE_TTL` | `0` (off) | In-process cache lifetime for `200` renders, e.g. `5m` |
+| `KAGEMUSHA_CACHE_MAX_ENTRIES` | `100` | In-process cache size (LRU). Memory ≈ entries × page size |
 | `KAGEMUSHA_WORKER_MAX_RENDERS` | `1000` | Worker exits (code 0) after this many renders |
 | `KAGEMUSHA_WORKER_MAX_AGE` | `6h` | Worker exits (code 0) after this age |
 | `KAGEMUSHA_BROWSER_RESTART_PERIOD` | `10m` | Planned browser restart period |
@@ -139,7 +141,7 @@ On a single VPS, let the reverse proxy do Basic auth and bot routing, and keep k
 - **Amplification**: one render fans out into dozens of sub-requests. Your own WAF rate limits will see kagemusha's egress IP as a burst. Use `KAGEMUSHA_BLOCK_DOMAINS` to drop analytics/ads/session-recording beacons — it also makes renders finish faster.
 - **Timeouts**: `KAGEMUSHA_QUEUE_TIMEOUT_MS` + `KAGEMUSHA_PAGE_TIMEOUT_MS` should stay below the LB idle timeout, or clients disconnect before you answer.
 - **Impatient preview bots** (Slack, Facebook: 5–9 s client timeouts) only need OGP tags. Serve them a lightweight endpoint upstream if full renders are slow.
-- **Caching is two-layered**: in-process (planned) and CDN. Set `KAGEMUSHA_CACHE_CONTROL` deliberately; the default `no-store` means *nothing is cached* until you decide otherwise.
+- **Caching is two-layered**: the CDN is the main cache; the in-process cache (`KAGEMUSHA_CACHE_TTL`, short is enough) absorbs bots retrying right after a render. Only `200` is cached, under the same key as single-flight, so a page rendered with forwarded credentials is served only to the same credentials. Set `KAGEMUSHA_CACHE_CONTROL` deliberately; the default `no-store` means *the CDN caches nothing* until you decide otherwise.
 - **/dev/shm**: Chromium needs shared memory. `--disable-dev-shm-usage` is on, but give the container `--shm-size=512m` anyway.
 - **Signals**: `SIGTERM` drains in-flight renders (up to `PAGE_TIMEOUT + 5s`) and exits `0`.
 
@@ -181,7 +183,8 @@ testdata/spa/         tiny SPAs used by integration tests
 ## Roadmap
 
 - [ ] `/metrics` (Prometheus): renders, durations, queue depth, browser restarts, exit reasons
-- [ ] In-process LRU cache with stale-while-revalidate
+- [x] In-process LRU cache
+- [ ] Stale-while-revalidate for the in-process cache
 - [ ] Lightpanda launcher + engine comparison test
 - [ ] Automatic browser restart after consecutive render failures
 - [ ] Smaller runtime image

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/otaqq/kagemusha/internal/cache"
 	"github.com/otaqq/kagemusha/internal/flow"
 	"github.com/otaqq/kagemusha/internal/netguard"
 	"github.com/otaqq/kagemusha/internal/render"
@@ -263,5 +264,77 @@ func TestRender_StrippedParamsShareOneRenderOfTheCleanURL(t *testing.T) {
 	wg.Wait()
 	if f.calls != 1 || f.reqs[0].URL != "https://shop.example/items?id=1" {
 		t.Fatalf("want one render of the clean URL, got calls=%d reqs=%v", f.calls, f.reqs)
+	}
+}
+
+func TestRender_CacheServesRepeated200WithAge(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	c := cache.New[render.Result](time.Minute, 10, func() time.Time { return now })
+	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "<html>ok</html>", StatusCode: 200, Trigger: render.TriggerReady}}
+	h := newHandler(f, Options{Cache: c, CacheControl: "public, max-age=60", StripQueryParams: []string{"utm_*"}})
+
+	first := get(h, "/render?url=https://shop.example/?utm_source=a")
+	if first.Header().Get("X-Kagemusha-Cache") != "miss" || first.Header().Get("Age") != "" {
+		t.Fatalf("first: %v", first.Header())
+	}
+	now = now.Add(7 * time.Second)
+	hit := get(h, "/https://shop.example/?utm_source=b")
+	if f.calls != 1 || hit.Code != 200 || hit.Body.String() != "<html>ok</html>" {
+		t.Fatalf("second request must be served from cache: calls=%d %d", f.calls, hit.Code)
+	}
+	if hit.Header().Get("X-Kagemusha-Cache") != "hit" || hit.Header().Get("Age") != "7" ||
+		hit.Header().Get("Cache-Control") != "public, max-age=60" || hit.Header().Get("X-Kagemusha-Trigger") != "ready" {
+		t.Fatalf("hit headers: %v", hit.Header())
+	}
+}
+
+func TestRender_CacheStoresOnly200(t *testing.T) {
+	c := cache.New[render.Result](time.Minute, 10, nil)
+	for _, res := range []render.Result{{HTML: "nf", StatusCode: 404}, {HTML: "auth", StatusCode: 401}} {
+		f := &fakeRenderer{healthy: true, res: res}
+		h := newHandler(f, Options{Cache: c})
+		get(h, "/render?url=https://shop.example/x")
+		get(h, "/render?url=https://shop.example/x")
+		if f.calls != 2 {
+			t.Fatalf("status %d must not be cached: calls=%d", res.StatusCode, f.calls)
+		}
+	}
+	f := &fakeRenderer{healthy: true, err: errors.New("boom")}
+	h := newHandler(f, Options{Cache: c})
+	get(h, "/render?url=https://shop.example/y")
+	get(h, "/render?url=https://shop.example/y")
+	if f.calls != 2 || c.Len() != 0 {
+		t.Fatalf("failures must not be cached: calls=%d len=%d", f.calls, c.Len())
+	}
+}
+
+func TestRender_CachedPageIsServedOnlyToTheSameCredentials(t *testing.T) {
+	c := cache.New[render.Result](time.Minute, 10, nil)
+	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "secret", StatusCode: 200}}
+	h := newHandler(f, Options{Cache: c, ForwardHeaders: []string{"Authorization"}})
+	do := func(auth string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/render?url=https://stg.example/", nil)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	do("Basic good")
+	if rec := do("Basic good"); rec.Header().Get("X-Kagemusha-Cache") != "hit" {
+		t.Fatal("same credentials must hit")
+	}
+	for _, auth := range []string{"", "Basic other"} {
+		if rec := do(auth); rec.Header().Get("X-Kagemusha-Cache") != "miss" {
+			t.Fatalf("%q must never get the cached page", auth)
+		}
+	}
+}
+
+func TestRender_NoCacheHeaderWhenCacheIsOff(t *testing.T) {
+	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "x"}}
+	if rec := get(newHandler(f, Options{}), "/render?url=https://shop.example/"); rec.Header().Get("X-Kagemusha-Cache") != "" {
+		t.Fatalf("cache header must be absent when off: %v", rec.Header())
 	}
 }
