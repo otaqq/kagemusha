@@ -51,6 +51,7 @@ type Config struct {
 	CacheMaxEntries      int
 	BlockResourceTypes   []string
 	RedirectCrossHost    bool
+	StripScripts         bool
 }
 
 // Default returns the default settings.
@@ -159,6 +160,9 @@ func Load(getenv Getenv) (Config, error) {
 		return c, fmt.Errorf("KAGEMUSHA_CACHE_MAX_ENTRIES: must be >= 1")
 	}
 	if c.BlockResourceTypes, err = resourceTypesEnv(getenv, "KAGEMUSHA_BLOCK_RESOURCE_TYPES"); err != nil {
+		return c, err
+	}
+	if c.StripScripts, err = boolEnv(getenv, "KAGEMUSHA_STRIP_SCRIPTS", c.StripScripts); err != nil {
 		return c, err
 	}
 	switch v := strings.ToLower(getenv("KAGEMUSHA_CROSS_HOST_NAVIGATION")); v {

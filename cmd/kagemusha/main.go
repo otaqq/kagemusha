@@ -87,7 +87,7 @@ func run() int {
 			ReadyFlag: cfg.ReadyFlag, IdleQuiet: cfg.IdleQuiet, PageTimeout: cfg.PageTimeout,
 			BlockDomains: cfg.BlockDomains, AllowDomains: cfg.AllowDomains, BlockResourceTypes: cfg.BlockResourceTypes,
 			Guard: guard, ForwardHosts: cfg.ForwardHeadersHosts, UserAgent: cfg.UserAgent,
-			RedirectCrossHost: cfg.RedirectCrossHost,
+			RedirectCrossHost: cfg.RedirectCrossHost, StripScripts: cfg.StripScripts,
 		},
 	}, log)
 	addr := net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.Port))

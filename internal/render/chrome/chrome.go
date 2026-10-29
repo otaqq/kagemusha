@@ -284,6 +284,11 @@ func (e *Engine) Render(ctx context.Context, req render.Request) (render.Result,
 	if err != nil {
 		return render.Result{}, fmt.Errorf("chrome: capture: %w", err)
 	}
+	if req.StripScripts {
+		if _, err := chromedp.Run(gctx, chromedp.Evaluate[int](stripScriptsScript)); err != nil {
+			return render.Result{}, fmt.Errorf("chrome: strip scripts: %w", err)
+		}
+	}
 	if res.HTML, err = chromedp.Run(gctx, chromedp.OuterHTML(chromedp.CSS("html"))); err != nil {
 		return render.Result{}, fmt.Errorf("chrome: capture: %w", err)
 	}
@@ -306,6 +311,13 @@ func watch[E any](tabCtx context.Context, ev cdp.Event[E], fn func()) {
 }
 
 const readyScript = `!!window.prerenderReady`
+
+// stripScriptsScript removes scripts the browser would execute (no type, a JavaScript MIME type, or module)
+// and script preloads, keeping data scripts such as JSON-LD. It runs after completion, right before capture.
+const stripScriptsScript = `(function(){var n=0;document.querySelectorAll('script,link[rel~="modulepreload"],link[rel~="preload"][as="script"]').forEach(function(el){
+if(el.tagName==='SCRIPT'){var t=(el.getAttribute('type')||'').trim().toLowerCase();if(t!==''&&t!=='module'&&t.indexOf('javascript')<0&&t.indexOf('ecmascript')<0)return;}
+el.remove();n++;});return n})()`
+
 const statusScript = `(function(){var m=document.querySelector('meta[name="prerender-status-code"]');return m?(parseInt(m.getAttribute('content'),10)||0):0})()`
 
 // await is the completion loop: ready (first-class) → idle (fallback) → timeout (partial result).

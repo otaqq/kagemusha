@@ -321,3 +321,53 @@ func TestIntegration_CrossHostNavigationFollowsByDefault(t *testing.T) {
 		t.Fatalf("status=%d location=%s html=%s", res.StatusCode, res.Location, res.HTML)
 	}
 }
+
+const scriptsPage = `<html><head>
+<link rel="modulepreload" href="/m.js"><link rel="preload" as="script" href="/p.js"><link rel="preload" as="style" href="/s.css">
+<script type="application/ld+json">{"@type":"Product","name":"tent"}</script>
+<script type="application/json" id="state">{"items":1}</script>
+<script src="/app.js"></script><script type="module">void 0</script><script type="text/javascript">void 0</script>
+</head><body><div id="app">page</div><script>window.prerenderReady = true;</script></body></html>`
+
+func scriptsServer(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			w.Header().Set("Content-Type", "text/javascript")
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(scriptsPage))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/"
+}
+
+func TestIntegration_StripScriptsKeepsDataScripts(t *testing.T) {
+	e := launch(t)
+	res, err := e.Render(context.Background(), render.Request{URL: scriptsServer(t), ReadyFlag: true, IdleQuiet: time.Second, PageTimeout: 10 * time.Second, StripScripts: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, keep := range []string{`application/ld+json`, `"@type":"Product"`, `id="state"`, `rel="preload" as="style"`, `<div id="app">page</div>`} {
+		if !strings.Contains(res.HTML, keep) {
+			t.Errorf("must keep %s: %s", keep, res.HTML)
+		}
+	}
+	for _, drop := range []string{`/app.js`, `type="module"`, `text/javascript`, `prerenderReady`, `modulepreload`, `as="script"`} {
+		if strings.Contains(res.HTML, drop) {
+			t.Errorf("must drop %s: %s", drop, res.HTML)
+		}
+	}
+}
+
+func TestIntegration_ScriptsAreKeptByDefault(t *testing.T) {
+	e := launch(t)
+	res, err := e.Render(context.Background(), render.Request{URL: scriptsServer(t), ReadyFlag: true, IdleQuiet: time.Second, PageTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.HTML, `/app.js`) || !strings.Contains(res.HTML, `modulepreload`) {
+		t.Fatalf("scripts must stay when StripScripts is off: %s", res.HTML)
+	}
+}

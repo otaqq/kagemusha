@@ -201,3 +201,15 @@ func TestLoad_CrossHostNavigation(t *testing.T) {
 		t.Fatal("unknown mode must fail")
 	}
 }
+
+func TestLoad_StripScripts(t *testing.T) {
+	if c, err := Load(env(nil)); err != nil || c.StripScripts {
+		t.Fatalf("must default to off: %v %+v", err, c)
+	}
+	if c, err := Load(env(map[string]string{"KAGEMUSHA_STRIP_SCRIPTS": "on"})); err != nil || !c.StripScripts {
+		t.Fatalf("got %v %+v", err, c)
+	}
+	if _, err := Load(env(map[string]string{"KAGEMUSHA_STRIP_SCRIPTS": "sometimes"})); err == nil {
+		t.Fatal("invalid boolean must fail")
+	}
+}

@@ -43,6 +43,9 @@ type Request struct {
 	// RedirectCrossHost stops the render when the main document navigates to another host
 	// (SPA navigation or HTTP redirect) and returns a 302 to it instead of rendering the destination.
 	RedirectCrossHost bool
+	// StripScripts removes executable scripts and script preloads from the captured HTML.
+	// Data scripts (application/ld+json, application/json, ...) are kept.
+	StripScripts bool
 }
 
 // Result is the output of one render. StatusCode is the HTTP status of the main document;
