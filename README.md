@@ -123,6 +123,35 @@ All settings are environment variables with safe defaults.
 
 Worker exit reasons are not metrics (the process is gone); they are logged and visible as the exit code.
 
+## Logs
+
+JSON lines on stdout. Every render request ends with exactly one `"msg":"request"` line; `outcome` matches `kagemusha_requests_total`:
+
+```json
+{"time":"…","level":"INFO","msg":"request","outcome":"rendered","status":200,"url":"https://shop.example/items/1","ua":"Mozilla/5.0 (compatible; Googlebot/2.1; …)","total_ms":6120,"trigger":"ready","render_ms":5980}
+```
+
+| Field | Meaning |
+|---|---|
+| `outcome` | `rendered`, `cache_hit`, `queue_timeout`, `render_failed`, `target_not_allowed`, `target_lookup_failed`, `denied_path`, `invalid_url` |
+| `status` | HTTP status kagemusha answered |
+| `url` / `ua` | Target URL (tracking parameters stripped) and the caller's user agent. Forwarded headers are never logged |
+| `total_ms` / `render_ms` | Time until the answer / time the browser spent rendering (`render_ms` only when this request waited for a render) |
+| `trigger`, `err` | Completion trigger; error text on failures |
+
+Levels: `ERROR` for `render_failed`, `WARN` for `queue_timeout` and rejected targets, `INFO` otherwise. Lifecycle events (worker limits, browser restarts, exit reasons) use other messages.
+
+```bash
+# Slowest renders and who asked for them
+jq -c 'select(.msg=="request" and .render_ms) | {render_ms, url, ua}' kagemusha.log | sort -t: -k2 -nr | head
+```
+
+```
+# CloudWatch Logs Insights: outcomes and p95 per 5 minutes
+filter msg = "request"
+| stats count(*) as requests, pct(render_ms, 95) as p95_render_ms by outcome, bin(5m)
+```
+
 ## Security
 
 kagemusha has **no authentication of its own**: who may reach it is decided by your network and edge. What it does by itself:

@@ -131,35 +131,34 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 		w.Header()[k] = vs
 	}
 	noStore(w)
+	e := &exchange{start: time.Now(), url: target, ua: req.UserAgent()}
+	defer s.finish(e)
+
 	u, err := url.Parse(target)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		s.opt.Metrics.Request("invalid_url")
-		http.Error(w, "invalid url", http.StatusBadRequest)
+		e.fail(w, "invalid_url", http.StatusBadRequest, "invalid url", nil)
 		return
 	}
 	stripQuery(u, s.opt.StripQueryParams)
+	e.url = u.String()
 	if s.opt.Guard != nil {
 		if err := s.opt.Guard.CheckTarget(req.Context(), u); err != nil {
-			s.log.Warn("target rejected", "url", u.String(), "err", err)
 			if errors.Is(err, netguard.ErrNotAllowed) {
-				s.opt.Metrics.Request("target_not_allowed")
-				http.Error(w, "target not allowed", http.StatusForbidden)
+				e.fail(w, "target_not_allowed", http.StatusForbidden, "target not allowed", err)
 			} else {
-				s.opt.Metrics.Request("target_lookup_failed")
-				http.Error(w, "target lookup failed", http.StatusBadGateway)
+				e.fail(w, "target_lookup_failed", http.StatusBadGateway, "target lookup failed", err)
 			}
 			return
 		}
 	}
 	for _, p := range s.opt.DenyPaths {
 		if strings.HasPrefix(u.Path, p) {
-			s.opt.Metrics.Request("denied_path")
-			http.Error(w, "not found", http.StatusNotFound)
+			e.fail(w, "denied_path", http.StatusNotFound, "not found", nil)
 			return
 		}
 	}
 	rreq := s.opt.Request
-	rreq.URL = u.String()
+	rreq.URL = e.url
 	rreq.Headers = s.forwarded(req)
 
 	key := flightKey(rreq)
@@ -167,43 +166,76 @@ func (s *server) serve(w http.ResponseWriter, req *http.Request, target string) 
 		if res, age, ok := s.opt.Cache.Get(key); ok {
 			w.Header().Set("X-Kagemusha-Cache", "hit")
 			w.Header().Set("Age", strconv.Itoa(int(age.Seconds())))
-			s.log.Info("render", "url", rreq.URL, "status", res.StatusCode, "trigger", res.Trigger, "cache", "hit")
-			s.opt.Metrics.Request("cache_hit")
+			e.outcome, e.status, e.trigger = "cache_hit", statusOf(res), res.Trigger
 			writeResult(w, res, s.opt.CacheControl)
 			return
 		}
 		w.Header().Set("X-Kagemusha-Cache", "miss")
 	}
 
-	start := time.Now()
 	// Run the render with its own ctx so a primary disconnect does not cancel it
 	v, err := s.gate.Do(req.Context(), context.Background(), key, s.opt.QueueTimeout, func(ctx context.Context) (any, error) {
 		res, err := s.r.Render(ctx, rreq)
 		if err == nil {
 			s.opt.Metrics.Render(statusOf(res), string(res.Trigger), res.Duration)
 		}
-		if err == nil && s.opt.Cache != nil && (res.StatusCode == 0 || res.StatusCode == http.StatusOK) {
+		if err == nil && s.opt.Cache != nil && statusOf(res) == http.StatusOK {
 			s.opt.Cache.Set(key, res)
 		}
 		return res, err
 	})
 	if err != nil {
 		if errors.Is(err, flow.ErrQueueTimeout) {
-			s.log.Warn("render queue timeout", "url", rreq.URL, "wait_ms", time.Since(start).Milliseconds())
-			s.opt.Metrics.Request("queue_timeout")
-			http.Error(w, "busy", http.StatusServiceUnavailable)
-			return
+			e.fail(w, "queue_timeout", http.StatusServiceUnavailable, "busy", nil)
+		} else {
+			e.fail(w, "render_failed", http.StatusBadGateway, "render failed", err)
 		}
-		s.log.Error("render failed", "url", rreq.URL, "err", err)
-		s.opt.Metrics.Request("render_failed")
-		http.Error(w, "render failed", http.StatusBadGateway)
 		return
 	}
 	res := v.(render.Result)
-	s.log.Info("render", "url", rreq.URL, "status", res.StatusCode, "trigger", res.Trigger,
-		"duration_ms", res.Duration.Milliseconds(), "total_ms", time.Since(start).Milliseconds())
-	s.opt.Metrics.Request("rendered")
+	e.outcome, e.status, e.trigger, e.rendered = "rendered", statusOf(res), res.Trigger, res.Duration
 	writeResult(w, res, s.opt.CacheControl)
+}
+
+// exchange is what one render request ended with; finish logs it as one line and counts it.
+type exchange struct {
+	start    time.Time
+	url, ua  string
+	outcome  string
+	status   int
+	trigger  render.Trigger
+	rendered time.Duration // 0 when the request did not wait for a render (cache hit, rejection)
+	err      error
+}
+
+func (e *exchange) fail(w http.ResponseWriter, outcome string, status int, body string, err error) {
+	e.outcome, e.status, e.err = outcome, status, err
+	http.Error(w, body, status)
+}
+
+// finish writes the request's single log line: error for failed renders, warn for load
+// shedding and rejected targets, info otherwise. Outcomes match kagemusha_requests_total.
+func (s *server) finish(e *exchange) {
+	s.opt.Metrics.Request(e.outcome)
+	attrs := []any{"outcome", e.outcome, "status", e.status, "url", e.url, "ua", e.ua,
+		"total_ms", time.Since(e.start).Milliseconds()}
+	if e.trigger != "" {
+		attrs = append(attrs, "trigger", e.trigger)
+	}
+	if e.rendered > 0 {
+		attrs = append(attrs, "render_ms", e.rendered.Milliseconds())
+	}
+	if e.err != nil {
+		attrs = append(attrs, "err", e.err.Error())
+	}
+	switch e.outcome {
+	case "render_failed":
+		s.log.Error("request", attrs...)
+	case "queue_timeout", "target_not_allowed", "target_lookup_failed":
+		s.log.Warn("request", attrs...)
+	default:
+		s.log.Info("request", attrs...)
+	}
 }
 
 // stripQuery removes matching parameters from u, keeping the order and encoding of the rest.

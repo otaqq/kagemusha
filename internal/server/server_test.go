@@ -1,9 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -443,5 +446,86 @@ func TestHealthz_503WhenFlowControlIsStalled(t *testing.T) {
 	}
 	if rec := get(newHandler(f, Options{StallTimeout: time.Minute}), "/healthz"); rec.Code != 200 {
 		t.Fatalf("defaults to the gate, which is idle: %d", rec.Code)
+	}
+}
+
+// logLines captures the JSON log lines written by a handler.
+func logLines(t *testing.T, run func(log *slog.Logger)) []map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	run(slog.New(slog.NewJSONHandler(&buf, nil)))
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("not JSON: %q", line)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func TestLog_OneRequestLinePerOutcome(t *testing.T) {
+	ok := &fakeRenderer{healthy: true, res: render.Result{HTML: "x", StatusCode: 200, Trigger: render.TriggerReady, Duration: 1500 * time.Millisecond}}
+	fail := &fakeRenderer{healthy: true, err: errors.New("browser died")}
+	c := cache.New[render.Result](time.Minute, 10, nil)
+	lines := logLines(t, func(log *slog.Logger) {
+		h := New(ok, flow.New(1), Options{QueueTimeout: time.Second, Cache: c, DenyPaths: []string{"/api"}}, log)
+		req := httptest.NewRequest(http.MethodGet, "/render?url=https://shop.example/", nil)
+		req.Header.Set("User-Agent", "Googlebot/2.1")
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		get(h, "/render?url=https://shop.example/")
+		get(h, "/render?url=https://shop.example/api/x")
+		get(New(fail, flow.New(1), Options{QueueTimeout: time.Second}, log), "/render?url=https://shop.example/")
+		get(New(ok, flow.New(1), Options{QueueTimeout: time.Second, Guard: fakeGuard{netguard.ErrNotAllowed}}, log), "/render?url=https://x.example/")
+	})
+	type want struct {
+		level, outcome string
+		status         float64
+	}
+	wants := []want{{"INFO", "rendered", 200}, {"INFO", "cache_hit", 200}, {"INFO", "denied_path", 404}, {"ERROR", "render_failed", 502}, {"WARN", "target_not_allowed", 403}}
+	if len(lines) != len(wants) {
+		t.Fatalf("want one line per request, got %d: %v", len(lines), lines)
+	}
+	for i, w := range wants {
+		l := lines[i]
+		if l["msg"] != "request" || l["level"] != w.level || l["outcome"] != w.outcome || l["status"] != w.status || l["url"] == nil || l["total_ms"] == nil {
+			t.Errorf("line %d: want %+v, got %v", i, w, l)
+		}
+	}
+	if first := lines[0]; first["ua"] != "Googlebot/2.1" || first["trigger"] != "ready" || first["render_ms"] != 1500.0 {
+		t.Errorf("rendered line must carry ua, trigger and render_ms: %v", first)
+	}
+	if lines[3]["err"] != "browser died" || lines[4]["err"] == nil {
+		t.Errorf("failures must carry err: %v %v", lines[3], lines[4])
+	}
+	if _, ok := lines[1]["render_ms"]; ok {
+		t.Errorf("a cache hit did not render: %v", lines[1])
+	}
+}
+
+func TestLog_QueueTimeoutAndInvalidURL(t *testing.T) {
+	f := &fakeRenderer{healthy: true, res: render.Result{HTML: "x"}, delay: 100 * time.Millisecond}
+	lines := logLines(t, func(log *slog.Logger) {
+		h := New(f, flow.New(1), Options{QueueTimeout: 20 * time.Millisecond}, log)
+		var wg sync.WaitGroup
+		wg.Go(func() { get(h, "/render?url=https://shop.example/a") })
+		time.Sleep(10 * time.Millisecond)
+		get(h, "/render?url=https://shop.example/b")
+		get(h, "/render?url=ftp://x")
+		wg.Wait()
+	})
+	outcomes := map[string]map[string]any{}
+	for _, l := range lines {
+		outcomes[l["outcome"].(string)] = l
+	}
+	if l := outcomes["queue_timeout"]; l == nil || l["level"] != "WARN" || l["status"] != 503.0 {
+		t.Errorf("queue timeout line: %v", l)
+	}
+	if l := outcomes["invalid_url"]; l == nil || l["status"] != 400.0 || l["url"] != "ftp://x" {
+		t.Errorf("invalid url line: %v", l)
 	}
 }
