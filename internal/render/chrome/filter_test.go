@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 
@@ -157,5 +158,50 @@ func TestFilter_BlocksConfiguredResourceTypes(t *testing.T) {
 	}
 	if newFilter(render.Request{}).blockedType(network.ResourceTypeImage) {
 		t.Fatal("nothing configured, nothing blocked")
+	}
+}
+
+func paused(url string, rt network.ResourceType, frame string) fetch.EventRequestPaused {
+	return fetch.EventRequestPaused{Request: &network.Request{URL: url}, ResourceType: rt, FrameID: cdp.FrameID(frame)}
+}
+
+func TestFilter_CrossHostNavigationOnlyForMainFrameDocuments(t *testing.T) {
+	f := newFilter(render.Request{URL: "https://kauriru.example/shop-a", RedirectCrossHost: true})
+	f.mainFrame = "main"
+	if !f.active() {
+		t.Fatal("redirect mode must activate interception")
+	}
+	if !f.crossHostNavigation(paused("https://shop-a.kauriru.example/", network.ResourceTypeDocument, "main")) {
+		t.Fatal("main-frame document to another host is a cross-host navigation")
+	}
+	for name, ev := range map[string]fetch.EventRequestPaused{
+		"same host":        paused("https://KAURIRU.example/shop-a/items", network.ResourceTypeDocument, "main"),
+		"same host https":  paused("http://kauriru.example:8080/", network.ResourceTypeDocument, "main"),
+		"iframe":           paused("https://ads.example/", network.ResourceTypeDocument, "child"),
+		"sub-resource":     paused("https://cdn.example/app.js", network.ResourceTypeScript, "main"),
+		"unparsable":       paused("::bad::", network.ResourceTypeDocument, "main"),
+		"non-http (about)": paused("about:blank", network.ResourceTypeDocument, "main"),
+	} {
+		if f.crossHostNavigation(ev) {
+			t.Errorf("%s must not count as cross-host navigation", name)
+		}
+	}
+	if newFilter(render.Request{URL: "https://kauriru.example/"}).crossHostNavigation(paused("https://other.example/", network.ResourceTypeDocument, "")) {
+		t.Fatal("follow mode never redirects")
+	}
+}
+
+func TestFilter_RedirectRecordsTheFirstLocationOnly(t *testing.T) {
+	f := newFilter(render.Request{URL: "https://a.example/", RedirectCrossHost: true})
+	select {
+	case <-f.redirected:
+		t.Fatal("not redirected yet")
+	default:
+	}
+	f.redirectTo("https://b.example/1")
+	f.redirectTo("https://c.example/2")
+	<-f.redirected
+	if f.location() != "https://b.example/1" {
+		t.Fatalf("location=%s", f.location())
 	}
 }

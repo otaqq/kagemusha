@@ -269,3 +269,55 @@ func TestIntegration_BlockedResourceTypesAreNeverFetchedButStayInHTML(t *testing
 		t.Fatalf("the tag must stay in the HTML: status=%d html=%s", res.StatusCode, res.HTML)
 	}
 }
+
+// aliasSite serves an alias page on 127.0.0.1 that moves to the canonical host (localhost),
+// either by SPA navigation (/spa) or by an HTTP redirect (/http).
+func aliasSite(t *testing.T) (alias, canonical string) {
+	t.Helper()
+	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><div id="app">canonical page</div><script>window.prerenderReady = true;</script></body></html>`))
+	}))
+	t.Cleanup(dest.Close)
+	canonical = strings.Replace(dest.URL, "127.0.0.1", "localhost", 1) + "/landing"
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/http":
+			http.Redirect(w, r, canonical, http.StatusMovedPermanently)
+		default:
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = fmt.Fprintf(w, `<html><body><div id="app">alias</div><script>
+window.addEventListener('load', function () { setTimeout(function () { location.href = '%s'; }, 100); });
+</script></body></html>`, canonical)
+		}
+	}))
+	t.Cleanup(src.Close)
+	return src.URL, canonical
+}
+
+func TestIntegration_CrossHostNavigationRedirects(t *testing.T) {
+	e := launch(t)
+	alias, canonical := aliasSite(t)
+	for _, path := range []string{"/spa", "/http"} {
+		res, err := e.Render(context.Background(), render.Request{URL: alias + path, ReadyFlag: true, IdleQuiet: 2 * time.Second, PageTimeout: 10 * time.Second,
+			RedirectCrossHost: true})
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if res.StatusCode != 302 || res.Location != canonical || res.Trigger != render.TriggerRedirect || res.HTML != "" {
+			t.Fatalf("%s: status=%d location=%s trigger=%s html=%q", path, res.StatusCode, res.Location, res.Trigger, res.HTML)
+		}
+	}
+}
+
+func TestIntegration_CrossHostNavigationFollowsByDefault(t *testing.T) {
+	e := launch(t)
+	alias, _ := aliasSite(t)
+	res, err := e.Render(context.Background(), render.Request{URL: alias + "/spa", ReadyFlag: true, IdleQuiet: 2 * time.Second, PageTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 200 || res.Location != "" || !strings.Contains(res.HTML, "canonical page") {
+		t.Fatalf("status=%d location=%s html=%s", res.StatusCode, res.Location, res.HTML)
+	}
+}

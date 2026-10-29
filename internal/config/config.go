@@ -50,6 +50,7 @@ type Config struct {
 	CacheTTL             time.Duration
 	CacheMaxEntries      int
 	BlockResourceTypes   []string
+	RedirectCrossHost    bool
 }
 
 // Default returns the default settings.
@@ -159,6 +160,13 @@ func Load(getenv Getenv) (Config, error) {
 	}
 	if c.BlockResourceTypes, err = resourceTypesEnv(getenv, "KAGEMUSHA_BLOCK_RESOURCE_TYPES"); err != nil {
 		return c, err
+	}
+	switch v := strings.ToLower(getenv("KAGEMUSHA_CROSS_HOST_NAVIGATION")); v {
+	case "", "follow":
+	case "redirect":
+		c.RedirectCrossHost = true
+	default:
+		return c, fmt.Errorf("KAGEMUSHA_CROSS_HOST_NAVIGATION: want follow or redirect, got %q", v)
 	}
 	return c, nil
 }

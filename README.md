@@ -66,7 +66,7 @@ Every wait has a deadline. A dead browser is a failed render, never a dead proce
 | `GET /https://host/path` | prerender-compatible form of the above |
 | `GET /healthz` | `200` when the browser answers CDP, `503` otherwise |
 
-Response headers: `Cache-Control` (per contract above), `X-Kagemusha-Trigger: ready|idle|timeout`, and with the in-process cache on, `X-Kagemusha-Cache: hit|miss` plus `Age` on hits.
+Response headers: `Cache-Control` (per contract above), `X-Kagemusha-Trigger: ready|idle|timeout|redirect`, `Location` on a cross-host redirect, and with the in-process cache on, `X-Kagemusha-Cache: hit|miss` plus `Age` on hits.
 
 ## Configuration
 
@@ -85,8 +85,9 @@ All settings are environment variables with safe defaults.
 | `KAGEMUSHA_PAGE_TIMEOUT_MS` | `30000` | Absolute render limit |
 | `KAGEMUSHA_BLOCK_DOMAINS` | – | Comma-separated domains to block (subdomains included) |
 | `KAGEMUSHA_ALLOW_DOMAINS` | – | If set, everything not listed is blocked |
-| `KAGEMUSHA_BLOCK_RESOURCE_TYPES` | – | Resource types never fetched, e.g. `Image,Media,Font` (CDP names; `Document` cannot be blocked). Tags stay in the HTML, so crawlers still see them |
+| `KAGEMUSHA_BLOCK_RESOURCE_TYPES` | – | Resource types never fetched, e.g. `Image,Media,Font` (CDP resource types, case-insensitive; `Document` cannot be blocked). Tags stay in the HTML, so crawlers still see them |
 | `KAGEMUSHA_DENY_PATHS` | – | Path prefixes answered with `404` without rendering |
+| `KAGEMUSHA_CROSS_HOST_NAVIGATION` | `follow` | `redirect`: when the page moves to another host (SPA navigation or HTTP redirect), stop and answer `302` with `Location` instead of rendering the destination under the original URL |
 | `KAGEMUSHA_STRIP_QUERY_PARAMS` | – | Query parameters removed before rendering and single-flight, e.g. `utm_*,fbclid,gclid` (trailing `*` matches any suffix). Match your CDN cache key |
 | `KAGEMUSHA_CACHE_CONTROL` | `no-store` | `Cache-Control` for `200` HTML |
 | `KAGEMUSHA_CACHE_TTL` | `0` (off) | In-process cache lifetime for `200` renders, e.g. `5m` |

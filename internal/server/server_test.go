@@ -338,3 +338,19 @@ func TestRender_NoCacheHeaderWhenCacheIsOff(t *testing.T) {
 		t.Fatalf("cache header must be absent when off: %v", rec.Header())
 	}
 }
+
+func TestRender_RedirectResultIs302WithLocationAndNeverCached(t *testing.T) {
+	c := cache.New[render.Result](time.Minute, 10, nil)
+	f := &fakeRenderer{healthy: true, res: render.Result{StatusCode: 302, Location: "https://shop-a.kauriru.example/", Trigger: render.TriggerRedirect}}
+	h := newHandler(f, Options{Cache: c, CacheControl: "public, max-age=3600"})
+	for range 2 {
+		rec := get(h, "/render?url=https://kauriru.example/shop-a")
+		if rec.Code != 302 || rec.Header().Get("Location") != "https://shop-a.kauriru.example/" ||
+			rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Kagemusha-Trigger") != "redirect" {
+			t.Fatalf("%d %v", rec.Code, rec.Header())
+		}
+	}
+	if f.calls != 2 {
+		t.Fatalf("redirects must not be cached: calls=%d", f.calls)
+	}
+}

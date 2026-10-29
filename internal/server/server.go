@@ -251,6 +251,9 @@ func writeResult(w http.ResponseWriter, res render.Result, cacheControl string) 
 	} else {
 		noStore(w)
 	}
+	if res.Location != "" {
+		w.Header().Set("Location", res.Location)
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Kagemusha-Trigger", string(res.Trigger))
 	w.WriteHeader(status)

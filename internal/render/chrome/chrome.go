@@ -211,7 +211,10 @@ func (e *Engine) Render(ctx context.Context, req render.Request) (render.Result,
 	defer deadlineCancel()
 
 	act := &activity{last: time.Now()}
+	// In Chrome the main frame id equals the target id
+	mainFrame := cdp.FrameID(chromedp.FromContext(tabCtx).Target.TargetID)
 	filter := newFilter(req)
+	filter.mainFrame = mainFrame
 	if filter.active() {
 		paused := chromedp.Events(tabCtx, fetch.RequestPaused)
 		go func() {
@@ -227,8 +230,7 @@ func (e *Engine) Render(ctx context.Context, req render.Request) (render.Result,
 	watch(tabCtx, network.LoadingFinished, act.finish)
 	watch(tabCtx, network.LoadingFailed, act.finish)
 	watch(tabCtx, page.LoadEventFired, act.load)
-	// In Chrome the main frame id equals the target id. The last main-frame document response is the page's HTTP status
-	mainFrame := cdp.FrameID(chromedp.FromContext(tabCtx).Target.TargetID)
+	// The last main-frame document response is the page's HTTP status
 	var docStatus atomic.Int64
 	responses := chromedp.Events(tabCtx, network.ResponseReceived)
 	go func() {
@@ -261,10 +263,18 @@ func (e *Engine) Render(ctx context.Context, req render.Request) (render.Result,
 		}
 	}
 	if err := chromedp.Do(tabCtx, chromedp.Navigate(req.URL)); err != nil {
+		select {
+		case <-filter.redirected: // an HTTP redirect to another host aborted the navigation
+			return redirectResult(filter, start), nil
+		default:
+		}
 		return render.Result{}, fmt.Errorf("chrome: navigate: %w", err)
 	}
 
-	trigger := e.await(deadlineCtx, req, act)
+	trigger := e.await(deadlineCtx, req, act, filter.redirected)
+	if trigger == render.TriggerRedirect {
+		return redirectResult(filter, start), nil
+	}
 
 	// Capture uses a short grace period independent of the deadline (so a timeout still returns the partial result)
 	gctx, gcancel := context.WithTimeout(tabCtx, 5*time.Second)
@@ -299,7 +309,8 @@ const readyScript = `!!window.prerenderReady`
 const statusScript = `(function(){var m=document.querySelector('meta[name="prerender-status-code"]');return m?(parseInt(m.getAttribute('content'),10)||0):0})()`
 
 // await is the completion loop: ready (first-class) → idle (fallback) → timeout (partial result).
-func (e *Engine) await(deadlineCtx context.Context, req render.Request, act *activity) render.Trigger {
+// redirected (nil when RedirectCrossHost is off) ends the wait as soon as the page moves to another host.
+func (e *Engine) await(deadlineCtx context.Context, req render.Request, act *activity, redirected <-chan struct{}) render.Trigger {
 	quiet := req.IdleQuiet
 	if quiet <= 0 {
 		quiet = 3 * time.Second
@@ -310,6 +321,8 @@ func (e *Engine) await(deadlineCtx context.Context, req render.Request, act *act
 		select {
 		case <-deadlineCtx.Done():
 			return render.TriggerTimeout
+		case <-redirected:
+			return render.TriggerRedirect
 		case <-ticker.C:
 		}
 		if req.ReadyFlag {
@@ -335,8 +348,18 @@ func statusCode(httpStatus, declared int) int {
 	return 200
 }
 
+func redirectResult(f *filter, start time.Time) render.Result {
+	return render.Result{StatusCode: 302, Location: f.location(), Trigger: render.TriggerRedirect, Duration: time.Since(start)}
+}
+
 // decide continues or fails a request paused by Fetch, according to the filter.
+// A cross-host navigation is checked first so the domain allowlist never turns it into an error page.
 func (e *Engine) decide(tabCtx context.Context, ev fetch.EventRequestPaused, f *filter) {
+	if f.crossHostNavigation(ev) {
+		f.redirectTo(ev.Request.URL)
+		_, _ = chromedp.Call(tabCtx, fetch.FailRequest, fetch.FailRequestParams{RequestID: ev.RequestID, ErrorReason: network.ErrorReasonAborted})
+		return
+	}
 	if f.blockedType(ev.ResourceType) || f.blocked(tabCtx, ev.Request.URL) {
 		_, _ = chromedp.Call(tabCtx, fetch.FailRequest, fetch.FailRequestParams{RequestID: ev.RequestID, ErrorReason: network.ErrorReasonBlockedByClient})
 		return

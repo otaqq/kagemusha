@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 
@@ -14,7 +15,8 @@ import (
 )
 
 // filter is the per-render request policy applied through Fetch interception:
-// the domain block / allow lists, blocked resource types, the host guard, and header forwarding.
+// the domain block / allow lists, blocked resource types, the host guard, header forwarding
+// and cross-host navigation.
 // When allow is set, everything outside it is blocked.
 type filter struct {
 	block []string
@@ -28,6 +30,13 @@ type filter struct {
 	origin       string
 	headers      map[string]string
 	forwardHosts []string
+
+	redirect   bool
+	targetHost string
+	mainFrame  cdp.FrameID
+	once       sync.Once
+	redirected chan struct{} // closed once a cross-host navigation was stopped
+	loc        string        // written before redirected is closed
 }
 
 func newFilter(req render.Request) *filter {
@@ -38,6 +47,13 @@ func newFilter(req render.Request) *filter {
 		guard:        req.Guard,
 		checked:      map[string]bool{},
 		forwardHosts: netguard.Normalize(req.ForwardHosts),
+	}
+	if req.RedirectCrossHost {
+		if u, err := url.Parse(req.URL); err == nil {
+			f.redirect = true
+			f.targetHost = strings.ToLower(u.Hostname())
+			f.redirected = make(chan struct{})
+		}
 	}
 	for _, t := range req.BlockResourceTypes {
 		f.types[network.ResourceType(t)] = true
@@ -53,8 +69,31 @@ func newFilter(req render.Request) *filter {
 
 // active reports whether requests need to be intercepted at all.
 func (f *filter) active() bool {
-	return len(f.block) > 0 || len(f.allow) > 0 || len(f.types) > 0 || f.guard != nil || len(f.headers) > 0
+	return len(f.block) > 0 || len(f.allow) > 0 || len(f.types) > 0 || f.guard != nil || len(f.headers) > 0 || f.redirect
 }
+
+// crossHostNavigation reports whether ev is the main frame's document moving to another host.
+func (f *filter) crossHostNavigation(ev fetch.EventRequestPaused) bool {
+	if !f.redirect || ev.ResourceType != network.ResourceTypeDocument || ev.FrameID != f.mainFrame {
+		return false
+	}
+	u, err := url.Parse(ev.Request.URL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	return strings.ToLower(u.Hostname()) != f.targetHost
+}
+
+// redirectTo records the first cross-host destination and signals the render to stop.
+func (f *filter) redirectTo(rawURL string) {
+	f.once.Do(func() {
+		f.loc = rawURL
+		close(f.redirected)
+	})
+}
+
+// location returns the recorded destination; valid after redirected is closed.
+func (f *filter) location() string { return f.loc }
 
 // blockedType reports whether requests of this resource type are never fetched.
 func (f *filter) blockedType(t network.ResourceType) bool { return f.types[t] }

@@ -184,3 +184,20 @@ func TestLoad_BlockResourceTypes(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_CrossHostNavigation(t *testing.T) {
+	c, err := Load(env(nil))
+	if err != nil || c.RedirectCrossHost {
+		t.Fatalf("must default to follow: %v %+v", err, c)
+	}
+	c, err = Load(env(map[string]string{"KAGEMUSHA_CROSS_HOST_NAVIGATION": "Redirect"}))
+	if err != nil || !c.RedirectCrossHost {
+		t.Fatalf("got %v %+v", err, c)
+	}
+	if c, err = Load(env(map[string]string{"KAGEMUSHA_CROSS_HOST_NAVIGATION": "follow"})); err != nil || c.RedirectCrossHost {
+		t.Fatalf("got %v %+v", err, c)
+	}
+	if _, err := Load(env(map[string]string{"KAGEMUSHA_CROSS_HOST_NAVIGATION": "block"})); err == nil {
+		t.Fatal("unknown mode must fail")
+	}
+}

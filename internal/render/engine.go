@@ -12,9 +12,10 @@ import (
 type Trigger string
 
 const (
-	TriggerReady   Trigger = "ready"   // window.prerenderReady === true
-	TriggerIdle    Trigger = "idle"    // network-idle fallback
-	TriggerTimeout Trigger = "timeout" // absolute limit reached (partial result)
+	TriggerReady    Trigger = "ready"    // window.prerenderReady === true
+	TriggerIdle     Trigger = "idle"     // network-idle fallback
+	TriggerTimeout  Trigger = "timeout"  // absolute limit reached (partial result)
+	TriggerRedirect Trigger = "redirect" // the page navigated to another host (RedirectCrossHost)
 )
 
 // HostGuard validates every host the browser connects to (SSRF protection). Implemented by netguard.Guard.
@@ -39,6 +40,9 @@ type Request struct {
 	ForwardHosts []string
 	// UserAgent overrides the browser user agent. Empty means the browser default plus " kagemusha".
 	UserAgent string
+	// RedirectCrossHost stops the render when the main document navigates to another host
+	// (SPA navigation or HTTP redirect) and returns a 302 to it instead of rendering the destination.
+	RedirectCrossHost bool
 }
 
 // Result is the output of one render. StatusCode is the HTTP status of the main document;
@@ -46,6 +50,7 @@ type Request struct {
 type Result struct {
 	HTML       string
 	StatusCode int
+	Location   string // set with a 302 when RedirectCrossHost stopped the render
 	Trigger    Trigger
 	Duration   time.Duration
 }
