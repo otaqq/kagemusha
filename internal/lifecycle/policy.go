@@ -3,6 +3,7 @@
 package lifecycle
 
 import (
+	"math/rand/v2"
 	"sync/atomic"
 	"time"
 )
@@ -34,9 +35,22 @@ type Policy struct {
 	now        func() time.Time
 }
 
-// NewPolicy creates a Policy that records the start time.
+// workerJitter is how much earlier than the configured limits a worker may exit, so workers
+// started together (a deploy, a scale-out) do not all recycle at once. Limits are never exceeded.
+const workerJitter = 0.2
+
+// NewPolicy creates a Policy that records the start time. Each limit is shortened by a random
+// 0–20%, so MaxRenders and MaxAge hold the effective values.
 func NewPolicy(maxRenders int, maxAge time.Duration) *Policy {
-	p := &Policy{MaxRenders: maxRenders, MaxAge: maxAge, now: time.Now}
+	return newPolicy(maxRenders, maxAge, rand.Float64())
+}
+
+func newPolicy(maxRenders int, maxAge time.Duration, r float64) *Policy {
+	f := 1 - workerJitter*r
+	if maxRenders > 0 {
+		maxRenders = max(1, int(float64(maxRenders)*f))
+	}
+	p := &Policy{MaxRenders: maxRenders, MaxAge: time.Duration(float64(maxAge) * f), now: time.Now}
 	p.started = p.now()
 	return p
 }

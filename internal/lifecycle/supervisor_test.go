@@ -141,7 +141,7 @@ func TestSupervisor_ExitPolicyCallsOnExitOnce(t *testing.T) {
 	f, _ := factoryOf(e)
 	var calls int32
 	var reason ExitReason
-	s := NewSupervisor(f, Options{CheckInterval: time.Hour, Policy: NewPolicy(2, 0), OnExit: func(r ExitReason) { atomic.AddInt32(&calls, 1); reason = r }})
+	s := NewSupervisor(f, Options{CheckInterval: time.Hour, Policy: newPolicy(2, 0, 0), OnExit: func(r ExitReason) { atomic.AddInt32(&calls, 1); reason = r }})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := s.Start(ctx); err != nil {
@@ -160,7 +160,7 @@ func TestSupervisor_ExitPolicyCallsOnExitOnce(t *testing.T) {
 func TestSupervisor_TimeBasedExitFromCheckLoop(t *testing.T) {
 	e := &fakeEngine{healthy: true}
 	f, _ := factoryOf(e)
-	p := NewPolicy(0, time.Millisecond)
+	p := newPolicy(0, time.Millisecond, 0)
 	done := make(chan ExitReason, 1)
 	s := NewSupervisor(f, Options{CheckInterval: 5 * time.Millisecond, WatchdogTimeout: time.Hour, Policy: p, OnExit: func(r ExitReason) { done <- r }})
 	ctx, cancel := context.WithCancel(context.Background())

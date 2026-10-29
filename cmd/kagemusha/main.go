@@ -57,10 +57,12 @@ func run() int {
 	defer stop()
 	exitCode := 0
 	exitCh := make(chan lifecycle.ExitReason, 1)
+	policy := lifecycle.NewPolicy(cfg.WorkerMaxRenders, cfg.WorkerMaxAge)
+	log.Info("worker limits", "max_renders", policy.MaxRenders, "max_age", policy.MaxAge.Round(time.Second).String())
 	sup := lifecycle.NewSupervisor(factory, lifecycle.Options{
 		WatchdogTimeout: cfg.WatchdogTimeout,
 		RestartPeriod:   cfg.BrowserRestartPeriod,
-		Policy:          lifecycle.NewPolicy(cfg.WorkerMaxRenders, cfg.WorkerMaxAge),
+		Policy:          policy,
 		OnExit:          func(r lifecycle.ExitReason) { exitCh <- r },
 		Log:             log,
 	})
