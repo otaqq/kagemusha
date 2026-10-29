@@ -14,15 +14,19 @@ ARG LIGHTPANDA_SHA256_AMD64=551747e35c51ba107b5d5277eca4b48e077b2a3b40f09a047bf6
 ARG LIGHTPANDA_SHA256_ARM64=392ba370c12d9f045c36c1477db8b3e2985942c89532732ef8d1610057db7d5c
 ARG DISTROLESS=gcr.io/distroless/cc-debian13:nonroot
 
-FROM golang:1.27-trixie AS build
+# Go cross-compiles natively on the build machine, so multi-arch builds do not emulate the compiler
+FROM --platform=$BUILDPLATFORM golang:1.27-trixie AS build
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/kagemusha ./cmd/kagemusha
-# Unit tests, plus the integration test binary that later runs inside the runtime image
+RUN CGO_ENABLED=0 GOARCH=${TARGETARCH:-$(go env GOARCH)} go build -trimpath -ldflags="-s -w" -o /out/kagemusha ./cmd/kagemusha
+
+# Unit tests, plus the integration test binary that later runs inside the runtime image (test target only)
+FROM build AS test-build
 RUN go vet ./... && go test -count=1 ./... \
- && CGO_ENABLED=0 go test -c -tags integration -o /out/render.test ./internal/render/chrome/
+ && CGO_ENABLED=0 GOARCH=${TARGETARCH:-$(go env GOARCH)} go test -c -tags integration -o /out/render.test ./internal/render/chrome/
 
 # chrome-headless-shell (Chrome for Testing) with every shared library it needs, collected into /out.
 # Libraries are taken per owning package, so dlopen'ed siblings come along; NSS loads its modules
@@ -89,7 +93,7 @@ FROM runtime-lightpanda AS test-lightpanda
 ENV KAGEMUSHA_LIGHTPANDA_PATH=/usr/bin/lightpanda \
     KAGEMUSHA_ENGINE_PATH=
 FROM test-${ENGINE} AS test
-COPY --from=build /out/render.test /tests/render.test
+COPY --from=test-build /out/render.test /tests/render.test
 COPY testdata /src/testdata
 WORKDIR /src/internal/render/chrome
 RUN ["/tests/render.test", "-test.count=1"]

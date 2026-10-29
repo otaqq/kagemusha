@@ -1,0 +1,70 @@
+name: release
+
+# Publishes the four images to ghcr.io when a version tag (v1.2.3, v1.2.3-rc.1) is pushed.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -f docker/Dockerfile.slim --target test .
+      - run: docker build -f docker/Dockerfile --target test --build-arg ENGINE=chrome .
+      - run: docker build -f docker/Dockerfile --target test --build-arg ENGINE=lightpanda .
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: chrome, engine: chrome, dockerfile: docker/Dockerfile }
+          - { variant: lightpanda, engine: lightpanda, dockerfile: docker/Dockerfile }
+          - { variant: chrome-slim, engine: chrome, dockerfile: docker/Dockerfile.slim }
+          - { variant: lightpanda-slim, engine: lightpanda, dockerfile: docker/Dockerfile.slim }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
+          # Moving tags (1.2, chrome, latest) follow releases only, never pre-releases
+          tags: |
+            type=semver,pattern={{version}},suffix=-${{ matrix.variant }}
+            type=semver,pattern={{major}}.{{minor}},suffix=-${{ matrix.variant }}
+            type=raw,value=${{ matrix.variant }},enable=${{ !contains(github.ref_name, '-') }}
+            type=semver,pattern={{version}},enable=${{ matrix.variant == 'chrome' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ matrix.variant == 'chrome' }}
+            type=raw,value=latest,enable=${{ matrix.variant == 'chrome' && !contains(github.ref_name, '-') }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: runtime
+          build-args: ENGINE=${{ matrix.engine }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true

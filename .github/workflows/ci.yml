@@ -33,3 +33,12 @@ jobs:
       - run: docker build -f docker/Dockerfile --build-arg ENGINE=lightpanda -t kagemusha:lightpanda .
       - run: docker build -f docker/Dockerfile.slim --build-arg ENGINE=chrome -t kagemusha:chrome-slim .
       - run: docker build -f docker/Dockerfile.slim --build-arg ENGINE=lightpanda -t kagemusha:lightpanda-slim .
+
+  # Native arm64: each production image tests itself (libraries live in other paths than on amd64)
+  integration-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -f docker/Dockerfile.slim --target test .
+      - run: docker build -f docker/Dockerfile --target test --build-arg ENGINE=chrome .
+      - run: docker build -f docker/Dockerfile --target test --build-arg ENGINE=lightpanda .

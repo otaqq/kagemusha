@@ -155,6 +155,8 @@ CI runs `docker build -f docker/Dockerfile.slim --target test .` (both engines) 
 
 Real-browser tests are mandatory in CI: mocks did not catch a single one of the production failures that shaped this design.
 
+Releasing: push a version tag (`git tag v0.1.0 && git push origin v0.1.0`). The `release` workflow runs the tests on amd64 and arm64, then publishes the four images for both architectures to `ghcr.io/otaqq/kagemusha` with provenance and SBOM attestations. Tags: `0.1.0`, `0.1`, `latest` and `chrome` for the default image; `0.1.0-lightpanda`, `lightpanda-slim`, … for the others. Pre-releases (`v0.1.0-rc.1`) get only their exact tag.
+
 Layout:
 
 ```

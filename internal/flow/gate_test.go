@@ -197,13 +197,16 @@ func TestDo_LeaveRacingSlotAcquisitionNeverLeaksSlots(t *testing.T) {
 	for range 500 {
 		_, _ = g.Do(cancelled, context.Background(), "k", 0, func(ctx context.Context) (any, error) { return nil, nil })
 	}
+	// Abandoned runs may still be handing a slot back for a moment; a leaked slot never comes back
 	deadline := time.Now().Add(time.Second)
-	for g.InFlight() != 0 && time.Now().Before(deadline) {
+	for (g.InFlight() != 0 || len(g.slots) != 0) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	v, err := g.Do(context.Background(), context.Background(), "after", 0, func(ctx context.Context) (any, error) { return "ok", nil })
-	if err != nil || v != "ok" || len(g.slots) != 0 {
-		t.Fatalf("slot leaked: v=%v err=%v used=%d", v, err, len(g.slots))
+	if len(g.slots) != 0 {
+		t.Fatalf("slot leaked: used=%d", len(g.slots))
+	}
+	if v, err := g.Do(context.Background(), context.Background(), "after", 0, func(ctx context.Context) (any, error) { return "ok", nil }); err != nil || v != "ok" {
+		t.Fatalf("gate unusable: v=%v err=%v", v, err)
 	}
 }
 
