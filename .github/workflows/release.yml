@@ -14,7 +14,8 @@ jobs:
     strategy:
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.runner }}
+    # Outside GitHub the job may be skipped by its `if` only once a runner has taken it: ask for a common label there
+    runs-on: ${{ github.server_url == 'https://github.com' && matrix.runner || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7
       - run: docker build -f docker/Dockerfile.slim --target test .

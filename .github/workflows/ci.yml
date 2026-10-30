@@ -34,10 +34,12 @@ jobs:
       - run: docker build -f docker/Dockerfile.slim --build-arg ENGINE=chrome -t kagemusha:chrome-slim .
       - run: docker build -f docker/Dockerfile.slim --build-arg ENGINE=lightpanda -t kagemusha:lightpanda-slim .
 
-  # Native arm64: each production image tests itself (libraries live in other paths than on amd64)
+  # Native arm64: each production image tests itself (libraries live in other paths than on amd64).
+  # GitHub only. Some other CI services hand the job to a runner first and evaluate its `if` there, so outside GitHub it
+  # asks for a common label: an arm64 label no runner has would keep the run waiting forever.
   integration-arm64:
     if: github.server_url == 'https://github.com'
-    runs-on: ubuntu-24.04-arm
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7
       - run: docker build -f docker/Dockerfile.slim --target test .
