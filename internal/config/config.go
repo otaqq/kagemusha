@@ -25,6 +25,7 @@ const (
 type Config struct {
 	Engine               Engine
 	EnginePath           string
+	EngineArgs           []string
 	ListenHost           string
 	Port                 int
 	MaxConcurrent        int
@@ -98,6 +99,10 @@ func Load(getenv Getenv) (Config, error) {
 		}
 	}
 	c.EnginePath = getenv("KAGEMUSHA_ENGINE_PATH")
+	c.EngineArgs = strings.Fields(getenv("KAGEMUSHA_ENGINE_ARGS"))
+	if len(c.EngineArgs) == 0 {
+		c.EngineArgs = nil
+	}
 	c.ListenHost = getenv("KAGEMUSHA_LISTEN_HOST")
 	if c.Port, err = intEnv(getenv, "KAGEMUSHA_PORT", c.Port); err != nil {
 		return c, err

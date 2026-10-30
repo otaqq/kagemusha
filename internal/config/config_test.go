@@ -253,3 +253,13 @@ func TestLoad_CacheMaxMB(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_EngineArgs(t *testing.T) {
+	if c, err := Load(env(nil)); err != nil || c.EngineArgs != nil {
+		t.Fatalf("default none: %v %+v", err, c)
+	}
+	c, err := Load(env(map[string]string{"KAGEMUSHA_ENGINE_ARGS": "  --ignore-certificate-errors   --lang=ja-JP "}))
+	if err != nil || len(c.EngineArgs) != 2 || c.EngineArgs[0] != "--ignore-certificate-errors" || c.EngineArgs[1] != "--lang=ja-JP" {
+		t.Fatalf("got %v %+v", err, c.EngineArgs)
+	}
+}

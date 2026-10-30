@@ -53,11 +53,13 @@ func run() int {
 	if path == "" {
 		path = spec.DefaultPath
 	}
+	// Extra browser flags (KAGEMUSHA_ENGINE_ARGS) go after the bundled ones
+	args := append(append([]string{}, spec.Args...), cfg.EngineArgs...)
 	factory := func() render.Engine {
 		if cfg.Engine == config.EngineLightpanda {
-			return chrome.NewLightpanda(path, spec.Args, log)
+			return chrome.NewLightpanda(path, args, log)
 		}
-		return chrome.New(path, spec.Args, log)
+		return chrome.New(path, args, log)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

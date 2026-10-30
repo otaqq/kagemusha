@@ -88,6 +88,7 @@ All settings are environment variables with safe defaults.
 |---|---|---|
 | `KAGEMUSHA_ENGINE` | `chrome` | `chrome` or `lightpanda` (must match the image you built) |
 | `KAGEMUSHA_ENGINE_PATH` | engine default | Path to the browser binary |
+| `KAGEMUSHA_ENGINE_ARGS` | – | Extra browser flags, space-separated, appended to the bundled ones (e.g. `--ignore-certificate-errors` for a development site with its own CA; never in production) |
 | `KAGEMUSHA_LISTEN_HOST` | – (all interfaces) | Listen address, e.g. `127.0.0.1` behind a local reverse proxy |
 | `KAGEMUSHA_PORT` | `3000` | Listen port |
 | `KAGEMUSHA_MAX_CONCURRENT` | `4` | Concurrent renders per worker |
