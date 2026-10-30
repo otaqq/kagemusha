@@ -100,6 +100,8 @@ RUN ["/tests/render.test", "-test.count=1"]
 
 FROM runtime-${ENGINE} AS runtime
 COPY --from=build /out/kagemusha /usr/local/bin/kagemusha
+# distroless :nonroot already runs as 65532; stated numerically so scanners and runAsNonRoot can verify it
+USER 65532:65532
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 CMD ["/usr/local/bin/kagemusha", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/kagemusha"]
