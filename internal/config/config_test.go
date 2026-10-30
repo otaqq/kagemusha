@@ -263,3 +263,23 @@ func TestLoad_EngineArgs(t *testing.T) {
 		t.Fatalf("got %v %+v", err, c.EngineArgs)
 	}
 }
+
+func TestLoad_AllowTargetHostAndResourceTypes(t *testing.T) {
+	c, err := Load(env(nil))
+	if err != nil || c.AllowTargetHost || c.AllowResourceTypes != nil {
+		t.Fatalf("defaults must be off: %v %+v", err, c)
+	}
+	c, err = Load(env(map[string]string{"KAGEMUSHA_ALLOW_TARGET_HOST": "on", "KAGEMUSHA_ALLOW_RESOURCE_TYPES": "script, stylesheet"}))
+	if err != nil || !c.AllowTargetHost || len(c.AllowResourceTypes) != 2 || c.AllowResourceTypes[0] != "Script" || c.AllowResourceTypes[1] != "Stylesheet" {
+		t.Fatalf("got %v %+v", err, c)
+	}
+	for _, m := range []map[string]string{
+		{"KAGEMUSHA_ALLOW_TARGET_HOST": "maybe"},
+		{"KAGEMUSHA_ALLOW_RESOURCE_TYPES": "Picture"},
+		{"KAGEMUSHA_ALLOW_RESOURCE_TYPES": "Document"},
+	} {
+		if _, err := Load(env(m)); err == nil {
+			t.Errorf("expected error for %v", m)
+		}
+	}
+}

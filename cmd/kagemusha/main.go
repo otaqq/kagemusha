@@ -119,6 +119,7 @@ func run() int {
 		Request: render.Request{
 			ReadyFlag: cfg.ReadyFlag, IdleQuiet: cfg.IdleQuiet, PageTimeout: cfg.PageTimeout,
 			BlockDomains: cfg.BlockDomains, AllowDomains: cfg.AllowDomains, BlockResourceTypes: cfg.BlockResourceTypes,
+			AllowTargetHost: cfg.AllowTargetHost, AllowResourceTypes: cfg.AllowResourceTypes,
 			Guard: guard, ForwardHosts: cfg.ForwardHeadersHosts, UserAgent: cfg.UserAgent,
 			RedirectCrossHost: cfg.RedirectCrossHost, StripScripts: cfg.StripScripts,
 		},

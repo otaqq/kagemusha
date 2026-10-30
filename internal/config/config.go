@@ -52,6 +52,8 @@ type Config struct {
 	CacheMaxEntries      int
 	CacheMaxMB           int
 	BlockResourceTypes   []string
+	AllowTargetHost      bool
+	AllowResourceTypes   []string
 	RedirectCrossHost    bool
 	StripScripts         bool
 	Metrics              bool
@@ -177,6 +179,12 @@ func Load(getenv Getenv) (Config, error) {
 		return c, fmt.Errorf("KAGEMUSHA_CACHE_MAX_MB: must be >= 1")
 	}
 	if c.BlockResourceTypes, err = resourceTypesEnv(getenv, "KAGEMUSHA_BLOCK_RESOURCE_TYPES"); err != nil {
+		return c, err
+	}
+	if c.AllowTargetHost, err = boolEnv(getenv, "KAGEMUSHA_ALLOW_TARGET_HOST", c.AllowTargetHost); err != nil {
+		return c, err
+	}
+	if c.AllowResourceTypes, err = resourceTypesEnv(getenv, "KAGEMUSHA_ALLOW_RESOURCE_TYPES"); err != nil {
 		return c, err
 	}
 	if c.StripScripts, err = boolEnv(getenv, "KAGEMUSHA_STRIP_SCRIPTS", c.StripScripts); err != nil {

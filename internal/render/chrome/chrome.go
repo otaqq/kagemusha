@@ -396,7 +396,7 @@ func (e *Engine) decide(tabCtx context.Context, ev fetch.EventRequestPaused, f *
 		_, _ = chromedp.Call(tabCtx, fetch.FailRequest, fetch.FailRequestParams{RequestID: ev.RequestID, ErrorReason: network.ErrorReasonAborted})
 		return
 	}
-	if f.blockedType(ev.ResourceType) || f.blocked(tabCtx, ev.Request.URL) {
+	if f.blockedType(ev.ResourceType) || f.blocked(tabCtx, ev.Request.URL, ev.ResourceType) {
 		_, _ = chromedp.Call(tabCtx, fetch.FailRequest, fetch.FailRequestParams{RequestID: ev.RequestID, ErrorReason: network.ErrorReasonBlockedByClient})
 		return
 	}

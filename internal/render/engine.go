@@ -33,6 +33,10 @@ type Request struct {
 	AllowDomains []string
 	// BlockResourceTypes are CDP resource types never fetched (e.g. Image, Media, Font).
 	BlockResourceTypes []string
+	// AllowTargetHost adds the page's own host (and subdomains) to AllowDomains.
+	AllowTargetHost bool
+	// AllowResourceTypes pass hosts outside AllowDomains (BlockDomains and the guard still apply).
+	AllowResourceTypes []string
 	// Guard blocks requests to disallowed hosts (nil disables the check).
 	Guard HostGuard
 	// Headers are added to requests for the target's origin and ForwardHosts (taken from the incoming request).

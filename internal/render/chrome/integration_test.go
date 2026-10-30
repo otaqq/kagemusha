@@ -371,3 +371,47 @@ func TestIntegration_ScriptsAreKeptByDefault(t *testing.T) {
 		t.Fatalf("scripts must stay when StripScripts is off: %s", res.HTML)
 	}
 }
+
+// The prerender-compatible allowlist: page host allowed, scripts from anywhere, other requests only to the allowlist.
+func TestIntegration_AllowTargetHostAndAllowResourceTypes(t *testing.T) {
+	e := launch(t)
+	rec := &recorder{seen: map[string]http.Header{}}
+	third := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(r)
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if r.URL.Path == "/sdk.js" {
+			w.Header().Set("Content-Type", "text/javascript")
+			_, _ = w.Write([]byte(`window.sdkLoaded = true;`))
+			return
+		}
+		_, _ = w.Write([]byte("third-data"))
+	}))
+	t.Cleanup(third.Close)
+	thirdURL := strings.Replace(third.URL, "127.0.0.1", "localhost", 1)
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/own" {
+			_, _ = w.Write([]byte("own-data"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, `<html><head><script src="%s/sdk.js"></script></head><body><div id="app">loading</div><script>
+Promise.all([
+  fetch('/own').then(function (r) { return r.text(); }).catch(function () { return 'own-blocked'; }),
+  fetch('%s/xhr').then(function (r) { return r.text(); }).catch(function () { return 'third-blocked'; })
+]).then(function (v) { document.getElementById('app').textContent = (window.sdkLoaded ? 'sdk' : 'no-sdk') + '|' + v.join('|'); window.prerenderReady = true; });
+</script></body></html>`, thirdURL, thirdURL)
+	}))
+	t.Cleanup(site.Close)
+
+	res, err := e.Render(context.Background(), render.Request{URL: site.URL + "/", ReadyFlag: true, IdleQuiet: time.Second, PageTimeout: 15 * time.Second,
+		AllowDomains: []string{"allowed.invalid"}, AllowTargetHost: true, AllowResourceTypes: []string{"Script"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.HTML, "sdk|own-data|third-blocked") {
+		t.Fatalf("want sdk|own-data|third-blocked: %s", res.HTML)
+	}
+	if rec.get("/xhr") != nil || rec.get("/sdk.js") == nil {
+		t.Fatal("the script must load and the third-party XHR must never leave")
+	}
+}

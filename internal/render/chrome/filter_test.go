@@ -21,12 +21,12 @@ func TestFilter_BlockListMatchesSubdomains(t *testing.T) {
 		t.Fatal("active")
 	}
 	for _, u := range []string{"https://www.google-analytics.com/collect", "https://static.hotjar.com/x.js"} {
-		if !f.blocked(bg, u) {
+		if !f.blocked(bg, u, "") {
 			t.Errorf("%s should be blocked", u)
 		}
 	}
 	for _, u := range []string{"https://shop.example/app.js", "https://notgoogle-analytics.com/x", "::bad::"} {
-		if f.blocked(bg, u) {
+		if f.blocked(bg, u, "") {
 			t.Errorf("%s should pass", u)
 		}
 	}
@@ -34,17 +34,17 @@ func TestFilter_BlockListMatchesSubdomains(t *testing.T) {
 
 func TestFilter_AllowListBlocksEverythingElse(t *testing.T) {
 	f := newFilter(render.Request{BlockDomains: []string{"cdn.example"}, AllowDomains: []string{"shop.example", "api.example"}})
-	if f.blocked(bg, "https://shop.example/") || f.blocked(bg, "https://img.shop.example/a.png") || f.blocked(bg, "https://api.example/v1") {
+	if f.blocked(bg, "https://shop.example/", "") || f.blocked(bg, "https://img.shop.example/a.png", "") || f.blocked(bg, "https://api.example/v1", "") {
 		t.Fatal("allowed hosts must pass")
 	}
-	if !f.blocked(bg, "https://www.googletagmanager.com/gtm.js") || !f.blocked(bg, "https://cdn.example/x") {
+	if !f.blocked(bg, "https://www.googletagmanager.com/gtm.js", "") || !f.blocked(bg, "https://cdn.example/x", "") {
 		t.Fatal("non-allowed hosts must be blocked")
 	}
 }
 
 func TestFilter_NoListsIsInactive(t *testing.T) {
 	f := newFilter(render.Request{AllowDomains: []string{" "}})
-	if f.active() || f.blocked(bg, "https://anything.example/") {
+	if f.active() || f.blocked(bg, "https://anything.example/", "") {
 		t.Fatal("inactive filter must pass everything")
 	}
 }
@@ -69,10 +69,10 @@ func TestFilter_GuardBlocksAndCachesPerHost(t *testing.T) {
 		t.Fatal("a guard alone must activate interception")
 	}
 	for range 3 {
-		if !f.blocked(bg, "http://internal.example/x") {
+		if !f.blocked(bg, "http://internal.example/x", "") {
 			t.Fatal("guard-denied host must be blocked")
 		}
-		if f.blocked(bg, "https://shop.example/a.js") {
+		if f.blocked(bg, "https://shop.example/a.js", "") {
 			t.Fatal("guard-allowed host must pass")
 		}
 	}
@@ -203,5 +203,52 @@ func TestFilter_RedirectRecordsTheFirstLocationOnly(t *testing.T) {
 	<-f.redirected
 	if f.location() != "https://b.example/1" {
 		t.Fatalf("location=%s", f.location())
+	}
+}
+
+func TestFilter_AllowTargetHostAddsThePageHostToTheAllowlist(t *testing.T) {
+	req := render.Request{URL: "https://shop-a.example/items/1", AllowDomains: []string{"kauriru.example"}}
+	strict := newFilter(req)
+	if !strict.blocked(bg, "https://shop-a.example/api", network.ResourceTypeXHR) {
+		t.Fatal("by default the page host is not on the allowlist")
+	}
+	req.AllowTargetHost = true
+	f := newFilter(req)
+	for _, u := range []string{"https://shop-a.example/api", "https://img.shop-a.example/x", "https://api.kauriru.example/v1"} {
+		if f.blocked(bg, u, network.ResourceTypeXHR) {
+			t.Errorf("%s must pass", u)
+		}
+	}
+	if !f.blocked(bg, "https://other.example/x", network.ResourceTypeXHR) {
+		t.Fatal("other hosts are still blocked")
+	}
+	if newFilter(render.Request{URL: "https://shop-a.example/", AllowTargetHost: true}).active() {
+		t.Fatal("without ALLOW_DOMAINS there is no allowlist to extend")
+	}
+}
+
+func TestFilter_AllowResourceTypesBypassTheAllowlistButNotBlocks(t *testing.T) {
+	g := &countingGuard{deny: map[string]bool{"internal.example": true}, calls: map[string]int{}}
+	f := newFilter(render.Request{
+		URL:                "https://shop.example/",
+		AllowDomains:       []string{"shop.example"},
+		AllowResourceTypes: []string{"Script"},
+		BlockDomains:       []string{"clarity.ms"},
+		Guard:              g,
+	})
+	if f.blocked(bg, "https://js.pay.jp/v2/pay.js", network.ResourceTypeScript) {
+		t.Fatal("an allowed resource type passes hosts outside the allowlist")
+	}
+	if !f.blocked(bg, "https://js.pay.jp/v2/x", network.ResourceTypeXHR) {
+		t.Fatal("other types still follow the allowlist")
+	}
+	if !f.blocked(bg, "https://www.clarity.ms/tag.js", network.ResourceTypeScript) {
+		t.Fatal("BLOCK_DOMAINS wins over allowed resource types")
+	}
+	if !f.blocked(bg, "http://internal.example/x.js", network.ResourceTypeScript) {
+		t.Fatal("the SSRF guard applies to allowed resource types too")
+	}
+	if newFilter(render.Request{AllowResourceTypes: []string{"Script"}}).blocked(bg, "https://any.example/", network.ResourceTypeXHR) {
+		t.Fatal("without ALLOW_DOMAINS nothing is blocked")
 	}
 }

@@ -19,9 +19,11 @@ import (
 // and cross-host navigation.
 // When allow is set, everything outside it is blocked.
 type filter struct {
-	block []string
-	allow []string
-	types map[network.ResourceType]bool
+	block      []string
+	allow      []string
+	types      map[network.ResourceType]bool // blocked resource types
+	allowTypes map[network.ResourceType]bool // resource types that pass the allowlist
+	pageHost   string                        // allowed with the allowlist when AllowTargetHost is on
 
 	guard   render.HostGuard
 	mu      sync.Mutex
@@ -43,6 +45,7 @@ func newFilter(req render.Request) *filter {
 	f := &filter{
 		block:        netguard.Normalize(req.BlockDomains),
 		types:        map[network.ResourceType]bool{},
+		allowTypes:   map[network.ResourceType]bool{},
 		allow:        netguard.Normalize(req.AllowDomains),
 		guard:        req.Guard,
 		checked:      map[string]bool{},
@@ -57,6 +60,14 @@ func newFilter(req render.Request) *filter {
 	}
 	for _, t := range req.BlockResourceTypes {
 		f.types[network.ResourceType(t)] = true
+	}
+	for _, t := range req.AllowResourceTypes {
+		f.allowTypes[network.ResourceType(t)] = true
+	}
+	if req.AllowTargetHost {
+		if u, err := url.Parse(req.URL); err == nil {
+			f.pageHost = strings.ToLower(u.Hostname())
+		}
 	}
 	if len(req.Headers) > 0 {
 		if u, err := url.Parse(req.URL); err == nil {
@@ -99,16 +110,19 @@ func (f *filter) location() string { return f.loc }
 func (f *filter) blockedType(t network.ResourceType) bool { return f.types[t] }
 
 // blocked reports whether the request URL should be blocked, matching on host name (subdomains included).
-func (f *filter) blocked(ctx context.Context, rawURL string) bool {
+// Order: block list, then the allowlist (skipped for AllowResourceTypes; the page host joins it
+// with AllowTargetHost), then the SSRF guard, which applies to everything.
+func (f *filter) blocked(ctx context.Context, rawURL string, rt network.ResourceType) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
-	if len(f.allow) > 0 && !netguard.MatchDomain(host, f.allow) {
+	if netguard.MatchDomain(host, f.block) {
 		return true
 	}
-	if netguard.MatchDomain(host, f.block) {
+	if len(f.allow) > 0 && !f.allowTypes[rt] && !netguard.MatchDomain(host, f.allow) &&
+		!(f.pageHost != "" && netguard.MatchDomain(host, []string{f.pageHost})) {
 		return true
 	}
 	return f.guardBlocks(ctx, host)

@@ -98,6 +98,8 @@ All settings are environment variables with safe defaults.
 | `KAGEMUSHA_PAGE_TIMEOUT_MS` | `30000` | Absolute render limit |
 | `KAGEMUSHA_BLOCK_DOMAINS` | – | Comma-separated domains to block (subdomains included) |
 | `KAGEMUSHA_ALLOW_DOMAINS` | – | If set, everything not listed is blocked |
+| `KAGEMUSHA_ALLOW_TARGET_HOST` | `off` | With `ALLOW_DOMAINS`: also allow the page's own host (and subdomains) |
+| `KAGEMUSHA_ALLOW_RESOURCE_TYPES` | – | With `ALLOW_DOMAINS`: resource types that pass hosts outside it, e.g. `Script` for third-party SDKs (`BLOCK_DOMAINS` and the SSRF guard still apply) |
 | `KAGEMUSHA_BLOCK_RESOURCE_TYPES` | – | Resource types never fetched, e.g. `Image,Media,Font` (CDP resource types, case-insensitive; `Document` cannot be blocked). Tags stay in the HTML, so crawlers still see them |
 | `KAGEMUSHA_DENY_PATHS` | – | Path prefixes answered with `404` without rendering |
 | `KAGEMUSHA_CROSS_HOST_NAVIGATION` | `follow` | `redirect`: when the page moves to another host (SPA navigation or HTTP redirect), stop and answer `302` with `Location` instead of rendering the destination under the original URL |
@@ -161,6 +163,7 @@ Benchmarks, how each image is built, how Lightpanda is driven (telemetry off) an
 - [ ] Vulnerability scan of all four images in CI (today only `chrome`)
 - [ ] Stale-while-revalidate for the in-process cache
 - [ ] Automatic browser restart after consecutive render failures
+- [ ] A config file as an alternative to the growing list of environment variables
 
 ## Status
 
