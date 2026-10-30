@@ -98,8 +98,10 @@ func run() int {
 	guard := netguard.New(cfg.TargetHosts, cfg.AllowPrivateTargets, nil)
 	var pageCache *cache.LRU[render.Result]
 	if cfg.CacheTTL > 0 {
-		pageCache = cache.New[render.Result](cfg.CacheTTL, cfg.CacheMaxEntries, nil)
+		pageCache = cache.New[render.Result](cfg.CacheTTL, cfg.CacheMaxEntries, nil).
+			LimitBytes(int64(cfg.CacheMaxMB)<<20, func(r render.Result) int { return len(r.HTML) })
 		m.Gauge("kagemusha_cache_entries", "Entries in the in-process cache.", func() float64 { return float64(pageCache.Len()) })
+		m.Gauge("kagemusha_cache_bytes", "HTML bytes held by the in-process cache (bounded by KAGEMUSHA_CACHE_MAX_MB).", func() float64 { return float64(pageCache.Bytes()) })
 	}
 	h := server.New(sup, gate, server.Options{
 		CacheControl:     cfg.CacheControl,

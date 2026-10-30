@@ -49,6 +49,7 @@ type Config struct {
 	StripQueryParams     []string
 	CacheTTL             time.Duration
 	CacheMaxEntries      int
+	CacheMaxMB           int
 	BlockResourceTypes   []string
 	RedirectCrossHost    bool
 	StripScripts         bool
@@ -72,6 +73,7 @@ func Default() Config {
 		BrowserRestartPeriod: 10 * time.Minute,
 		WatchdogTimeout:      10 * time.Second,
 		CacheMaxEntries:      100,
+		CacheMaxMB:           64,
 		Metrics:              true,
 		StallTimeout:         5 * time.Minute,
 	}
@@ -162,6 +164,12 @@ func Load(getenv Getenv) (Config, error) {
 	}
 	if c.CacheMaxEntries < 1 {
 		return c, fmt.Errorf("KAGEMUSHA_CACHE_MAX_ENTRIES: must be >= 1")
+	}
+	if c.CacheMaxMB, err = intEnv(getenv, "KAGEMUSHA_CACHE_MAX_MB", c.CacheMaxMB); err != nil {
+		return c, err
+	}
+	if c.CacheMaxMB < 1 {
+		return c, fmt.Errorf("KAGEMUSHA_CACHE_MAX_MB: must be >= 1")
 	}
 	if c.BlockResourceTypes, err = resourceTypesEnv(getenv, "KAGEMUSHA_BLOCK_RESOURCE_TYPES"); err != nil {
 		return c, err

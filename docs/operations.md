@@ -24,7 +24,8 @@ The slowest answer is `KAGEMUSHA_QUEUE_TIMEOUT_MS` + `KAGEMUSHA_PAGE_TIMEOUT_MS`
 ## Caching
 
 - **The CDN is the main cache.** `KAGEMUSHA_CACHE_CONTROL` defaults to `no-store`, so *the CDN caches nothing* until you set it, for example `public, max-age=10800, stale-while-revalidate=86400`. Only `200` carries it.
-- The **in-process cache** (`KAGEMUSHA_CACHE_TTL`, short is enough) absorbs bots retrying right after a render. It keeps only `200`, under the single-flight key, and answers with `X-Kagemusha-Cache: hit` and `Age`. Memory ≈ `KAGEMUSHA_CACHE_MAX_ENTRIES` × page size.
+- The **in-process cache** (`KAGEMUSHA_CACHE_TTL`, short is enough) absorbs bots retrying right after a render. It keeps only `200`, under the single-flight key, and answers with `X-Kagemusha-Cache: hit` and `Age`. It is bounded three ways — age (`KAGEMUSHA_CACHE_TTL`), entries (`KAGEMUSHA_CACHE_MAX_ENTRIES`) and total HTML size (`KAGEMUSHA_CACHE_MAX_MB`) — so it cannot grow into an OOM kill.
+- **Sizing memory**: container limit ≥ browser peak at `KAGEMUSHA_MAX_CONCURRENT` + `KAGEMUSHA_CACHE_MAX_MB` + some headroom. Measure the browser peak under load (`docs/engines.md` has reference numbers); the driver itself is a few tens of MB.
 - `KAGEMUSHA_STRIP_QUERY_PARAMS` (e.g. `utm_*,fbclid,gclid`) makes URLs that differ only in tracking parameters share one render and one cache entry. Match your CDN cache key.
 
 ## Lighter renders
@@ -49,7 +50,7 @@ One render fans out into dozens of sub-requests, and your own WAF sees kagemusha
 | `kagemusha_queue_running`, `kagemusha_queue_waiting`, `kagemusha_max_concurrent` | Scale out on `waiting` (or `running / max_concurrent`) rather than CPU |
 | `kagemusha_browser_restarts_total{reason}`, `kagemusha_browser_relaunch_failures_total` | `planned`, `watchdog`, `requested`; a rising `watchdog` means hangs |
 | `kagemusha_worker_renders_total`, `process_start_time_seconds` | Progress toward the worker recycle limits |
-| `kagemusha_cache_entries` | In-process cache size (when enabled) |
+| `kagemusha_cache_entries`, `kagemusha_cache_bytes` | In-process cache size and HTML bytes held (when enabled) |
 
 Worker exit reasons are not metrics (the process is gone); they are logged and visible as the exit code.
 

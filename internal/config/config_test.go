@@ -239,3 +239,17 @@ func TestLoad_StallTimeout(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_CacheMaxMB(t *testing.T) {
+	if c, err := Load(env(nil)); err != nil || c.CacheMaxMB != 64 {
+		t.Fatalf("default 64MB: %v %+v", err, c)
+	}
+	if c, err := Load(env(map[string]string{"KAGEMUSHA_CACHE_MAX_MB": "16"})); err != nil || c.CacheMaxMB != 16 {
+		t.Fatalf("got %v %+v", err, c)
+	}
+	for _, bad := range []string{"0", "-1", "x"} {
+		if _, err := Load(env(map[string]string{"KAGEMUSHA_CACHE_MAX_MB": bad})); err == nil {
+			t.Errorf("expected error for %q", bad)
+		}
+	}
+}

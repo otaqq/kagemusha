@@ -104,7 +104,8 @@ All settings are environment variables with safe defaults.
 | `KAGEMUSHA_STRIP_QUERY_PARAMS` | – | Query parameters removed before rendering and single-flight, e.g. `utm_*,fbclid,gclid` (trailing `*` matches any suffix). Match your CDN cache key |
 | `KAGEMUSHA_CACHE_CONTROL` | `no-store` | `Cache-Control` for `200` HTML |
 | `KAGEMUSHA_CACHE_TTL` | `0` (off) | In-process cache lifetime for `200` renders, e.g. `5m` |
-| `KAGEMUSHA_CACHE_MAX_ENTRIES` | `100` | In-process cache size (LRU). Memory ≈ entries × page size |
+| `KAGEMUSHA_CACHE_MAX_ENTRIES` | `100` | In-process cache: maximum entries (LRU) |
+| `KAGEMUSHA_CACHE_MAX_MB` | `64` | In-process cache: maximum total HTML size; least recently used entries are evicted, larger pages are not cached |
 | `KAGEMUSHA_WORKER_MAX_RENDERS` | `1000` | Worker exits (code 0) after this many renders (randomly up to 20% fewer, so workers do not recycle together) |
 | `KAGEMUSHA_WORKER_MAX_AGE` | `6h` | Worker exits (code 0) after this age (randomly up to 20% earlier) |
 | `KAGEMUSHA_BROWSER_RESTART_PERIOD` | `10m` | Planned browser restart period |
