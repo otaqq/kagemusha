@@ -42,7 +42,7 @@ docker run --rm -p 3000:3000 --shm-size=512m \
 curl -i "http://localhost:3000/render?url=https://example.com/"
 ```
 
-Or with compose: `docker compose -f docker/compose.yaml up --build`.
+Or with compose: `docker compose -f docker/compose.yaml up --build`. On Kubernetes, use the Helm chart in [charts/kagemusha](charts/kagemusha) — see [docs/deployment.md](docs/deployment.md).
 
 ### Images
 
@@ -65,7 +65,7 @@ Use the distroless images in production; the `-slim` ones add a shell for debugg
    - the absolute limit `KAGEMUSHA_PAGE_TIMEOUT_MS` (returns the partial DOM, marked `X-Kagemusha-Trigger: timeout`).
    The response status is the HTTP status of the page itself (a `401`/`404`/`5xx` is passed through, never turned into a `200`). A page served as `200` may declare another status with `<meta name="prerender-status-code" content="404">`.
 4. **Response contract**: only `200` HTML carries your `KAGEMUSHA_CACHE_CONTROL`; anything else is `Cache-Control: no-store`. Upstream page headers are never copied.
-5. **Lifecycle**: a supervisor owns the browser process. It restarts it when the watchdog sees it unresponsive, on a schedule, and the worker itself exits gracefully after N renders or T hours so leaks never mature. Exit code `0` = planned recycle, `1` = crash. `/healthz` reports the real browser state and does not consume a render slot.
+5. **Lifecycle**: a supervisor owns the browser process. It restarts it when the watchdog sees it unresponsive, on a schedule, and the worker itself exits gracefully after N renders or T hours so leaks never mature. Exit code `0` = planned recycle, `1` = crash. Before a planned exit or on `SIGTERM`, the worker can keep serving for `KAGEMUSHA_DRAIN_DELAY` while `/healthz` answers `503`, so the load balancer stops routing to it first. `/healthz` reports the real browser state and does not consume a render slot.
 
 Every wait has a deadline. A dead browser is a failed render, never a dead process.
 
@@ -75,7 +75,7 @@ Every wait has a deadline. A dead browser is a failed render, never a dead proce
 |---|---|
 | `GET /render?url=<absolute URL>` | Render and return HTML |
 | `GET /https://host/path` | prerender-compatible form of the above |
-| `GET /healthz` | `200` when the browser answers CDP and flow control is moving, `503` otherwise |
+| `GET /healthz` | `200` when the browser answers CDP and flow control is moving, `503` otherwise (and while draining) |
 | `GET /metrics` | Prometheus metrics ([list](docs/operations.md#metrics); `KAGEMUSHA_METRICS=off` removes it) |
 
 Response headers: `Cache-Control` (per contract above), `X-Kagemusha-Trigger: ready|idle|timeout|redirect`, `Location` on a cross-host redirect, and with the in-process cache on, `X-Kagemusha-Cache: hit|miss` plus `Age` on hits.
@@ -114,6 +114,7 @@ All settings are environment variables with safe defaults.
 | `KAGEMUSHA_BROWSER_RESTART_PERIOD` | `10m` | Planned browser restart period |
 | `KAGEMUSHA_WATCHDOG_TIMEOUT_MS` | `10000` | Restart the browser after this long unresponsive |
 | `KAGEMUSHA_STALL_TIMEOUT` | `5m` | `/healthz` answers `503` when every slot has been busy this long with no render starting or finishing, so the orchestrator replaces the worker. `0` disables |
+| `KAGEMUSHA_DRAIN_DELAY` | `0` | On a planned exit or `SIGTERM`: keep serving this long with `/healthz` at `503` before closing the listener, so the load balancer stops routing here first (e.g. `15s` behind a readiness probe) |
 | `KAGEMUSHA_TARGET_HOSTS` | – | If set, only these hosts (subdomains included) may be rendered; others get `403` |
 | `KAGEMUSHA_ALLOW_PRIVATE_TARGETS` | `off` | Allow private, loopback and link-local addresses (local development only) |
 | `KAGEMUSHA_FORWARD_HEADERS` | – | Incoming request headers passed on to the page, e.g. `Authorization` for a Basic-auth staging site |
@@ -138,7 +139,7 @@ Route bot user agents to kagemusha at your edge (excluding its own user agent, `
 
 `GET /metrics` (Prometheus) and one JSON log line per request (`"msg":"request"`, with the same `outcome` values) show what happened to every request.
 
-Routing, lifecycle, timeouts, caching, the metric list and log fields: [docs/operations.md](docs/operations.md).
+Routing, lifecycle, timeouts, caching, the metric list and log fields: [docs/operations.md](docs/operations.md). Docker and Kubernetes (Helm chart): [docs/deployment.md](docs/deployment.md).
 
 ## Development
 

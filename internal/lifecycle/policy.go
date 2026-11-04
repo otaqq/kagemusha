@@ -36,7 +36,8 @@ type Policy struct {
 }
 
 // workerJitter is how much earlier than the configured limits a worker may exit, so workers
-// started together (a deploy, a scale-out) do not all recycle at once. Limits are never exceeded.
+// started together (a deploy, a scale-out) do not all recycle at once. Jitter only shortens the limits; renders that
+// arrive during KAGEMUSHA_DRAIN_DELAY after the exit request are still served.
 const workerJitter = 0.2
 
 // NewPolicy creates a Policy that records the start time. Each limit is shortened by a random

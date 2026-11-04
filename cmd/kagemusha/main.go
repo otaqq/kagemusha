@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -75,12 +76,17 @@ func run() int {
 		OnExit:          func(r lifecycle.ExitReason) { exitCh <- r },
 		Log:             log,
 	})
-	if err := sup.Start(ctx); err != nil {
+	// The browser outlives the signal: it is closed only after the listener has shut down and in-flight renders
+	// have finished
+	engCtx, closeEngine := context.WithCancel(context.Background())
+	defer closeEngine()
+	if err := sup.Start(engCtx); err != nil {
 		log.Error("engine start failed", "err", err, "engine", cfg.Engine, "path", path)
 		return 1
 	}
 
 	gate := flow.New(cfg.MaxConcurrent)
+	var draining atomic.Bool
 	var m *metrics.Metrics
 	if cfg.Metrics {
 		m = metrics.New()
@@ -116,6 +122,7 @@ func run() int {
 		Cache:            pageCache,
 		Metrics:          m,
 		StallTimeout:     cfg.StallTimeout,
+		Draining:         &draining,
 		Request: render.Request{
 			ReadyFlag: cfg.ReadyFlag, IdleQuiet: cfg.IdleQuiet, PageTimeout: cfg.PageTimeout,
 			BlockDomains: cfg.BlockDomains, AllowDomains: cfg.AllowDomains, BlockResourceTypes: cfg.BlockResourceTypes,
@@ -141,10 +148,22 @@ func run() int {
 		exitCode = r.ExitCode()
 		log.Info("worker exiting", "reason", r, "exit_code", exitCode)
 	}
-	// Let in-flight renders finish (graceful). The LB routes new requests to other workers
+	// Fail /healthz but keep serving for DrainDelay, so the orchestrator stops routing here before the listener
+	// closes; requests that arrive meanwhile are still rendered. Then let in-flight renders finish (graceful)
+	draining.Store(true)
+	if cfg.DrainDelay > 0 {
+		log.Info("draining", "delay", cfg.DrainDelay.String())
+		time.Sleep(cfg.DrainDelay)
+	}
 	sctx, cancel := context.WithTimeout(context.Background(), cfg.PageTimeout+5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(sctx)
+	closeEngine()
+	select {
+	case <-sup.Done():
+	case <-time.After(10 * time.Second):
+		log.Warn("browser did not close in time")
+	}
 	stop()
 	return exitCode
 }

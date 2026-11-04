@@ -58,6 +58,9 @@ type Config struct {
 	StripScripts         bool
 	Metrics              bool
 	StallTimeout         time.Duration
+	// DrainDelay is how long a worker keeps serving, with /healthz at 503, before it closes its listener on a
+	// planned recycle or SIGTERM, so the orchestrator stops routing to it first (0: close at once).
+	DrainDelay time.Duration
 }
 
 // Default returns the default settings.
@@ -198,6 +201,12 @@ func Load(getenv Getenv) (Config, error) {
 	}
 	if c.StallTimeout < 0 {
 		return c, fmt.Errorf("KAGEMUSHA_STALL_TIMEOUT: must be >= 0")
+	}
+	if c.DrainDelay, err = durEnv(getenv, "KAGEMUSHA_DRAIN_DELAY", c.DrainDelay); err != nil {
+		return c, err
+	}
+	if c.DrainDelay < 0 {
+		return c, fmt.Errorf("KAGEMUSHA_DRAIN_DELAY: must be >= 0")
 	}
 	switch v := strings.ToLower(getenv("KAGEMUSHA_CROSS_HOST_NAVIGATION")); v {
 	case "", "follow":

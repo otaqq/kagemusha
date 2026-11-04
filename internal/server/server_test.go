@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -446,6 +447,22 @@ func TestHealthz_503WhenFlowControlIsStalled(t *testing.T) {
 	}
 	if rec := get(newHandler(f, Options{StallTimeout: time.Minute}), "/healthz"); rec.Code != 200 {
 		t.Fatalf("defaults to the gate, which is idle: %d", rec.Code)
+	}
+}
+
+func TestHealthz_503WhileDrainingButRendersStillServed(t *testing.T) {
+	var draining atomic.Bool
+	h := newHandler(&fakeRenderer{healthy: true}, Options{Draining: &draining})
+	if rec := get(h, "/healthz"); rec.Code != 200 {
+		t.Fatalf("before draining: want 200, got %d", rec.Code)
+	}
+	draining.Store(true)
+	rec := get(h, "/healthz")
+	if rec.Code != 503 || !strings.Contains(rec.Body.String(), "draining") || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("draining: want 503 draining no-store, got %d %q", rec.Code, rec.Body.String())
+	}
+	if rec := get(h, "/render?url=https://example.com/"); rec.Code != 200 {
+		t.Fatalf("renders go on while draining: want 200, got %d", rec.Code)
 	}
 }
 

@@ -45,3 +45,48 @@ jobs:
       - run: docker build -f docker/Dockerfile.slim --target test .
       - run: docker build -f docker/Dockerfile --target test --build-arg ENGINE=chrome .
       - run: docker build -f docker/Dockerfile --target test --build-arg ENGINE=lightpanda .
+
+  # The Helm chart: lint, render with every optional part on (ci/test-values.yaml) and validate against the Kubernetes
+  # schemas (ServiceMonitor is a CRD and skipped)
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+      - name: kubeconform
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C "$HOME/.local/bin" kubeconform
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: helm lint charts/kagemusha --strict
+      - run: helm lint charts/kagemusha -f charts/kagemusha/ci/test-values.yaml --strict
+      - run: helm template t charts/kagemusha | kubeconform -strict -summary
+      - run: helm template t charts/kagemusha -f charts/kagemusha/ci/test-values.yaml | kubeconform -strict -summary -skip ServiceMonitor
+
+  # The chart on a real cluster: the distroless chrome image under the chart's security context (non-root, read-only
+  # root file system) must start and render. GitHub only (kind needs a privileged Docker).
+  chart-kind:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: kagemusha
+      - run: docker build -f docker/Dockerfile --build-arg ENGINE=chrome -t kagemusha:ci .
+      - run: kind load docker-image kagemusha:ci --name kagemusha
+      - run: |
+          helm install km charts/kagemusha --wait --timeout 5m \
+            --set image.repository=kagemusha --set image.tag=ci --set image.pullPolicy=Never \
+            --set env.KAGEMUSHA_TARGET_HOSTS=example.com
+      - name: Render through the Service
+        run: |
+          kubectl run curl --rm -i --restart=Never --image=curlimages/curl --quiet -- \
+            sh -c 'test "$(curl -s -o /dev/null -w "%{http_code}" "http://km-kagemusha:3000/render?url=https://example.com/")" = 200'
+      - if: failure()
+        run: |
+          kubectl get pods -o wide
+          kubectl describe pods -l app.kubernetes.io/name=kagemusha
+          kubectl logs -l app.kubernetes.io/name=kagemusha --tail=50

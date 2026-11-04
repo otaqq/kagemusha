@@ -21,13 +21,13 @@ Typical loop: edit → `make test` → `make itest` → `make up` and `curl "htt
 
 ## CI
 
-CI ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) runs on every push and pull request: `unit` (gofmt, go vet, `go test ./...`), `integration` (`docker build -f docker/Dockerfile.slim --target test .` for both engines, then `docker build -f docker/Dockerfile --target test --build-arg ENGINE=…` so each production image tests itself and a library missing from distroless fails the build, then all four images), and `integration-arm64` (the test builds on a native arm64 runner).
+CI ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) runs on every push and pull request: `unit` (gofmt, go vet, `go test ./...`), `integration` (`docker build -f docker/Dockerfile.slim --target test .` for both engines, then `docker build -f docker/Dockerfile --target test --build-arg ENGINE=…` so each production image tests itself and a library missing from distroless fails the build, then all four images), `integration-arm64` (the test builds on a native arm64 runner), `chart` (`helm lint` and `kubeconform` on the Helm chart, with every optional part on via `charts/kagemusha/ci/test-values.yaml`) and `chart-kind` (installs the chart with the distroless chrome image on a kind cluster and renders through the Service).
 
 Real-browser tests are mandatory in CI: mocks did not catch a single one of the production failures that shaped this design.
 
 ## Releasing
 
-Push a version tag (`git tag v0.1.0 && git push origin v0.1.0`). The `release` workflow runs the tests on amd64 and arm64, then publishes the four images for both architectures to `ghcr.io/otaqq/kagemusha` with provenance and SBOM attestations. Tags: `0.1.0`, `0.1`, `latest` and `chrome` for the default image; `0.1.0-lightpanda`, `lightpanda-slim`, … for the others. Pre-releases (`v0.1.0-rc.1`) get only their exact tag.
+Push a version tag (`git tag v0.1.0 && git push origin v0.1.0`). The `release` workflow runs the tests on amd64 and arm64, then publishes the four images for both architectures to `ghcr.io/otaqq/kagemusha` with provenance and SBOM attestations. Tags: `0.1.0`, `0.1`, `latest` and `chrome` for the default image; `0.1.0-lightpanda`, `lightpanda-slim`, … for the others. Pre-releases (`v0.1.0-rc.1`) get only their exact tag. The Helm chart is then pushed to `oci://ghcr.io/otaqq/charts/kagemusha`, packaged with the tag's version as both `version` and `appVersion` (the values in `Chart.yaml` are not used for releases).
 
 ## Layout
 
@@ -42,6 +42,7 @@ internal/netguard/    SSRF guard: target allowlist, non-public address check
 internal/cache/       in-process LRU (TTL, entries, bytes)
 internal/metrics/     Prometheus text format
 docker/               Dockerfile (distroless), Dockerfile.slim (trixie-slim), compose
+charts/kagemusha/     Helm chart (docs/deployment.md)
 testdata/spa/         tiny SPAs used by integration tests
 ```
 

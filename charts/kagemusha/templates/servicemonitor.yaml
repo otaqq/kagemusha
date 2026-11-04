@@ -1,0 +1,22 @@
+{{- if .Values.serviceMonitor.enabled }}
+{{- if eq (.Values.env.KAGEMUSHA_METRICS | default "on" | toString) "off" }}
+{{- fail "serviceMonitor.enabled needs GET /metrics, but env.KAGEMUSHA_METRICS is off" }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "kagemusha.fullname" . }}
+  labels:
+    {{- include "kagemusha.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "kagemusha.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

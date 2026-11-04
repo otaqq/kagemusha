@@ -1,0 +1,18 @@
+apiVersion: v2
+name: kagemusha
+description: Dynamic rendering server for SPAs, handing crawlers and link-preview bots a rendered HTML body double
+type: application
+# release.yml packages the chart with the version of the tag (v1.2.3 -> 1.2.3) for both fields
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/otaqq/kagemusha
+sources:
+  - https://github.com/otaqq/kagemusha
+annotations:
+  artifacthub.io/license: Apache-2.0
+keywords:
+  - prerender
+  - dynamic-rendering
+  - seo
+  - headless-chrome
+  - spa

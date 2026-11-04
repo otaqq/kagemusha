@@ -203,3 +203,29 @@ func TestSupervisor_ClosesEngineWhenCtxEnds(t *testing.T) {
 	}
 	t.Fatal("engine not closed on ctx cancel")
 }
+
+func TestSupervisor_DoneClosesAfterTheEngineIsClosed(t *testing.T) {
+	e := &fakeEngine{healthy: true}
+	f, _ := factoryOf(e)
+	s := NewSupervisor(f, Options{CheckInterval: time.Hour})
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := s.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.Done():
+		t.Fatal("Done closed while ctx is live")
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-s.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Done not closed after ctx cancel")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.closed {
+		t.Fatal("engine must be closed before Done")
+	}
+}

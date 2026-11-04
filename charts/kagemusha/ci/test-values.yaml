@@ -1,0 +1,30 @@
+# Values for `helm lint` / `helm template` in CI: every optional part on
+env:
+  KAGEMUSHA_TARGET_HOSTS: "example.com"
+  KAGEMUSHA_CACHE_CONTROL: "public, max-age=3600"
+  KAGEMUSHA_MAX_CONCURRENT: 2
+envFrom:
+  - secretRef:
+      name: kagemusha-extra
+extraEnv:
+  - name: KAGEMUSHA_USER_AGENT
+    value: "test-agent kagemusha"
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: kagemusha.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+autoscaling:
+  enabled: true
+serviceMonitor:
+  enabled: true
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: kagemusha

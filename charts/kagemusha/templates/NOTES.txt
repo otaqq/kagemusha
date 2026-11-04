@@ -1,0 +1,14 @@
+kagemusha {{ include "kagemusha.imageTag" . }} ({{ .Values.image.engine }}) is starting{{ if not .Values.autoscaling.enabled }} with {{ .Values.replicaCount }} replica(s){{ end }}.
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kagemusha.fullname" . }} {{ .Values.service.port }}
+  curl -i "localhost:{{ .Values.service.port }}/render?url=https://example.com/"
+
+Route only bot user agents to it from your edge, excluding its own user agent (kagemusha).
+{{- if not .Values.env.KAGEMUSHA_TARGET_HOSTS }}
+
+Note: env.KAGEMUSHA_TARGET_HOSTS is not set, so any public host can be rendered through this service.
+{{- end }}
+{{- if and (not .Values.autoscaling.enabled) (lt (int .Values.replicaCount) 2) }}
+
+Note: with one replica, every planned worker recycle (KAGEMUSHA_WORKER_MAX_RENDERS / _MAX_AGE) is a short outage.
+{{- end }}

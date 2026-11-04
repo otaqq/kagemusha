@@ -10,8 +10,9 @@ Run several small workers behind a load balancer rather than one big one. Worker
 
 - A supervisor owns the browser: it restarts it every `KAGEMUSHA_BROWSER_RESTART_PERIOD`, and when it stops answering for `KAGEMUSHA_WATCHDOG_TIMEOUT_MS`.
 - The worker exits after `KAGEMUSHA_WORKER_MAX_RENDERS` renders or `KAGEMUSHA_WORKER_MAX_AGE`, each shortened by a random 0–20% so workers started together do not recycle together. The effective limits are logged at startup. Exit code `0` is a planned recycle, `1` a crash.
-- `SIGTERM` drains in-flight renders (up to `PAGE_TIMEOUT + 5s`) and exits `0`.
-- `/healthz` answers `503` when the browser does not answer, or when every slot has been busy for `KAGEMUSHA_STALL_TIMEOUT` with no render starting or finishing. It never takes a render slot. `kagemusha healthcheck` probes it from inside the container.
+- On a planned exit or `SIGTERM`, the worker first drains: `/healthz` answers `503` (`draining`) while it keeps accepting and rendering requests for `KAGEMUSHA_DRAIN_DELAY`, so the load balancer or Kubernetes Service stops routing to it before the listener closes. Requests that arrive meanwhile are rendered, so a worker may finish a few renders past `KAGEMUSHA_WORKER_MAX_RENDERS`. Then it stops accepting connections, lets in-flight renders finish (up to `PAGE_TIMEOUT + 5s`), closes the browser and exits (`0` for a planned exit or a signal). The slowest shutdown is `DRAIN_DELAY + PAGE_TIMEOUT + 5 s`: keep the orchestrator's stop timeout above it (ECS `stopTimeout`, Kubernetes `terminationGracePeriodSeconds`).
+- Without a drain delay (the default `0`), the listener closes at once: a load balancer that still routes to the worker gets refused connections until its health check notices. Set the delay above the health check's detection time (interval × failure threshold).
+- `/healthz` answers `503` while draining, when the browser does not answer, or when every slot has been busy for `KAGEMUSHA_STALL_TIMEOUT` with no render starting or finishing. It never takes a render slot. `kagemusha healthcheck` probes it from inside the container.
 
 ## Timeouts
 

@@ -1,0 +1,133 @@
+# kagemusha keeps no state between requests, so it scales out: run several small workers and let Kubernetes replace
+# the ones that recycle themselves (docs/deployment.md).
+
+image:
+  repository: ghcr.io/otaqq/kagemusha
+  # chrome (default) or lightpanda: picks the image variant. KAGEMUSHA_ENGINE is set inside the image.
+  engine: chrome
+  # Default: the chart's appVersion, plus "-lightpanda" for that engine. A tag set here is used as is.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 2
+
+# KAGEMUSHA_* settings (README "Configuration"), rendered into a ConfigMap. A change restarts the Pods.
+# The container always listens on port 3000: do not set KAGEMUSHA_PORT or KAGEMUSHA_LISTEN_HOST here.
+env: {}
+#  KAGEMUSHA_TARGET_HOSTS: "example.com"
+#  KAGEMUSHA_CACHE_CONTROL: "public, max-age=3600"
+#  KAGEMUSHA_BLOCK_DOMAINS: "www.googletagmanager.com,www.google-analytics.com"
+#  KAGEMUSHA_STRIP_QUERY_PARAMS: "utm_*,fbclid,gclid"
+
+# Extra variables in the Kubernetes form (valueFrom and so on)
+extraEnv: []
+# Whole ConfigMaps or Secrets as variables, e.g. [{ secretRef: { name: kagemusha-extra } }]
+envFrom: []
+
+service:
+  type: ClusterIP
+  port: 3000
+
+# kagemusha has no authentication of its own: route only bot traffic to it from your edge, and expose it only to
+# networks you trust (docs/security.md)
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: kagemusha.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Chrome peaked at about 340 MB on a small SPA (docs/engines.md); measure your own pages.
+# Lightpanda needs an order of magnitude less memory.
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+# Chromium uses /dev/shm heavily; the container default (64 MiB) is too small. Counts toward the memory limit.
+shm:
+  sizeLimit: 512Mi
+
+# Scratch space for the browser profile and temporary files; the root file system is read-only
+tmp:
+  sizeLimit: 256Mi
+
+# KAGEMUSHA_DRAIN_DELAY: on a planned recycle or SIGTERM, /healthz turns 503 and the worker keeps serving this long
+# before it closes its listener, so the Service stops routing to it first. Keep it above the readiness probe's
+# periodSeconds x failureThreshold (10 s). env.KAGEMUSHA_DRAIN_DELAY overrides it.
+drainDelay: 15s
+
+# Must cover drainDelay + KAGEMUSHA_PAGE_TIMEOUT_MS + 5 s (15 + 30 + 5 = 50 s by default)
+terminationGracePeriodSeconds: 60
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# CPU-based scaling. Queue length (kagemusha_queue_waiting) is the better signal; see docs/deployment.md.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# A Prometheus Operator ServiceMonitor for GET /metrics
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+podSecurityContext:
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# The browser must answer before the Pod takes traffic
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 2
+  failureThreshold: 30
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 5
+  failureThreshold: 2
+
+# /healthz turns 503 when the browser stops answering or flow control stalls (KAGEMUSHA_STALL_TIMEOUT)
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 10
+  failureThreshold: 6
+
+podAnnotations: {}
+podLabels: {}
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []

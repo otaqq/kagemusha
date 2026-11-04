@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/otaqq/kagemusha/internal/cache"
@@ -61,6 +62,8 @@ type Options struct {
 	StallTimeout time.Duration
 	// Stall overrides the stall detector (defaults to the gate; replaced in tests).
 	Stall StallDetector
+	// Draining, when true, makes /healthz answer 503 so the orchestrator stops routing here while renders go on.
+	Draining *atomic.Bool
 }
 
 // New builds the http.Handler.
@@ -100,6 +103,10 @@ type server struct {
 // healthz reports the real engine state without taking a flow-control slot.
 func (s *server) healthz(w http.ResponseWriter, req *http.Request) {
 	noStore(w)
+	if s.opt.Draining != nil && s.opt.Draining.Load() {
+		http.Error(w, "draining", http.StatusServiceUnavailable)
+		return
+	}
 	if !s.r.Healthy(req.Context()) {
 		http.Error(w, "engine unavailable", http.StatusServiceUnavailable)
 		return

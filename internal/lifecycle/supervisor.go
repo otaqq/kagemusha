@@ -36,6 +36,7 @@ type Supervisor struct {
 	eng     render.Engine
 	exited  sync.Once
 	restart chan struct{}
+	done    chan struct{}
 	metrics struct {
 		sync.Mutex
 		restarts map[string]int
@@ -61,7 +62,7 @@ func NewSupervisor(f Factory, opt Options) *Supervisor {
 	if opt.Log == nil {
 		opt.Log = slog.Default()
 	}
-	s := &Supervisor{factory: f, opt: opt, restart: make(chan struct{}, 1)}
+	s := &Supervisor{factory: f, opt: opt, restart: make(chan struct{}, 1), done: make(chan struct{})}
 	s.metrics.restarts = map[string]int{}
 	return s
 }
@@ -89,7 +90,11 @@ func (s *Supervisor) launch(ctx context.Context) (render.Engine, error) {
 	return eng, nil
 }
 
+// Done is closed once the loop has ended after ctx and the engine is closed.
+func (s *Supervisor) Done() <-chan struct{} { return s.done }
+
 func (s *Supervisor) loop(ctx context.Context) {
+	defer close(s.done)
 	check := time.NewTicker(s.opt.CheckInterval)
 	defer check.Stop()
 	var planned <-chan time.Time

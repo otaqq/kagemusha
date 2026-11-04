@@ -63,11 +63,24 @@ func TestLoad_InvalidValuesFail(t *testing.T) {
 		{"KAGEMUSHA_BROWSER_RESTART_PERIOD": "x"},
 		{"KAGEMUSHA_WATCHDOG_TIMEOUT_MS": "x"},
 		{"KAGEMUSHA_MAX_CONCURRENT": "x"},
+		{"KAGEMUSHA_DRAIN_DELAY": "x"},
+		{"KAGEMUSHA_DRAIN_DELAY": "-1s"},
 	}
 	for _, m := range cases {
 		if _, err := Load(env(m)); err == nil {
 			t.Errorf("expected error for %v", m)
 		}
+	}
+}
+
+func TestLoad_DrainDelay(t *testing.T) {
+	c, err := Load(env(nil))
+	if err != nil || c.DrainDelay != 0 {
+		t.Fatalf("default: want 0, got %v (%v)", c.DrainDelay, err)
+	}
+	c, err = Load(env(map[string]string{"KAGEMUSHA_DRAIN_DELAY": "15s"}))
+	if err != nil || c.DrainDelay != 15*time.Second {
+		t.Fatalf("want 15s, got %v (%v)", c.DrainDelay, err)
 	}
 }
 

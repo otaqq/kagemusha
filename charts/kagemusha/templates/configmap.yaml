@@ -1,0 +1,18 @@
+{{- range $k, $v := .Values.env }}
+{{- if or (eq $k "KAGEMUSHA_PORT") (eq $k "KAGEMUSHA_LISTEN_HOST") }}
+{{- fail (printf "%s is fixed by the chart (port 3000, all interfaces); remove it from env" $k) }}
+{{- end }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kagemusha.fullname" . }}
+  labels:
+    {{- include "kagemusha.labels" . | nindent 4 }}
+data:
+  {{- if not (hasKey .Values.env "KAGEMUSHA_DRAIN_DELAY") }}
+  KAGEMUSHA_DRAIN_DELAY: {{ .Values.drainDelay | quote }}
+  {{- end }}
+  {{- range $k, $v := .Values.env }}
+  {{ $k }}: {{ $v | toString | quote }}
+  {{- end }}
